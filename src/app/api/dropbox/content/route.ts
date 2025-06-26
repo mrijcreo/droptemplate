@@ -75,19 +75,17 @@ export async function POST(request: NextRequest) {
             throw new Error('Bestand is geen geldig PDF formaat')
           }
 
-          // Strategy 1: Try with pdf-parse but with safe options
+          // Strategy 1: Try with pdf-parse with safe options
           try {
-            // Configure pdfjs-dist to prevent file system access
-            const pdfjsLib = await import('pdfjs-dist/legacy/build/pdf.js')
-            pdfjsLib.GlobalWorkerOptions.workerSrc = ''
-            
             const pdfParse = await import('pdf-parse').then(module => module.default)
             
-            // Use safe options to prevent test file access
+            // Use safe options to prevent worker issues and file system access
             const options = {
               // Disable any file system access
               max: 0, // No page limit
-              version: 'default'
+              version: 'default',
+              // Disable worker to prevent pdfjs-dist issues in Node.js environment
+              pdfjs: { disableWorker: true }
             }
             
             const pdfData = await pdfParse(pdfBuffer, options)
