@@ -2,26 +2,255 @@ import { NextRequest, NextResponse } from 'next/server'
 import { Dropbox } from 'dropbox'
 import fetch from 'node-fetch'
 
-// Fix for pdf-parse ENOENT error in serverless environments
+// Enhanced PDF parsing with multiple strategies
 let pdfParse: any = null
 let pdfParseInitialized = false
 
 async function initializePdfParse() {
   if (!pdfParseInitialized) {
     try {
-      // Import pdfjs-dist and disable worker to prevent file system access
+      // Import pdfjs-dist and configure for serverless environment
       const pdfjs = await import('pdfjs-dist/build/pdf')
+      
+      // Disable worker completely to prevent file system access
       pdfjs.GlobalWorkerOptions.workerSrc = null
       
       // Import pdf-parse after configuring pdfjs
       pdfParse = (await import('pdf-parse')).default
       pdfParseInitialized = true
+      console.log('✅ PDF-parse initialized successfully')
     } catch (error) {
-      console.error('Failed to initialize pdf-parse:', error)
+      console.error('❌ Failed to initialize pdf-parse:', error)
       pdfParseInitialized = false
+      pdfParse = null
     }
   }
   return pdfParse
+}
+
+// Advanced text cleaning function
+function cleanExtractedText(text: string): string {
+  if (!text) return ''
+  
+  return text
+    // Remove null bytes and control characters
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
+    // Normalize Unicode
+    .normalize('NFKC')
+    // Fix common PDF extraction issues
+    .replace(/([a-z])([A-Z])/g, '$1 $2') // Add space between camelCase
+    .replace(/([.!?])([A-Z])/g, '$1 $2') // Add space after sentence endings
+    .replace(/([a-zA-Z])(\d)/g, '$1 $2') // Add space between letters and numbers
+    .replace(/(\d)([a-zA-Z])/g, '$1 $2') // Add space between numbers and letters
+    // Remove excessive whitespace
+    .replace(/\s+/g, ' ')
+    .replace(/\n\s*\n/g, '\n\n')
+    .trim()
+}
+
+// Function to detect if text is mostly garbage
+function isGarbageText(text: string): boolean {
+  if (!text || text.length < 10) return true
+  
+  // Count readable characters
+  const readableChars = text.match(/[a-zA-Z0-9\s.,!?;:()\-]/g) || []
+  const readableRatio = readableChars.length / text.length
+  
+  // If less than 60% readable characters, consider it garbage
+  return readableRatio < 0.6
+}
+
+// Enhanced PDF text extraction with multiple strategies
+async function extractPdfText(pdfBuffer: Buffer, filePath: string): Promise<{ content: string, method: string, success: boolean }> {
+  let content = ''
+  let method = 'unknown'
+  let success = false
+
+  // Validate PDF buffer
+  if (pdfBuffer.length === 0) {
+    throw new Error('PDF bestand is leeg')
+  }
+
+  // Check if it's actually a PDF file
+  const pdfHeader = pdfBuffer.slice(0, 4).toString()
+  if (pdfHeader !== '%PDF') {
+    throw new Error('Bestand is geen geldig PDF formaat')
+  }
+
+  // Strategy 1: Enhanced pdf-parse with better options
+  try {
+    const pdfParseLib = await initializePdfParse()
+    
+    if (pdfParseLib) {
+      console.log(`🔄 Trying pdf-parse for ${filePath}`)
+      
+      const options = {
+        max: 0, // No page limit
+        version: 'default',
+        normalizeWhitespace: true,
+        disableCombineTextItems: false
+      }
+      
+      const pdfData = await pdfParseLib(pdfBuffer, options)
+      let extractedText = pdfData.text || ''
+      
+      if (extractedText && extractedText.trim().length > 20) {
+        extractedText = cleanExtractedText(extractedText)
+        
+        // Filter out garbage lines
+        const lines = extractedText.split('\n')
+        const cleanLines = lines.filter(line => {
+          const cleanLine = line.trim()
+          return cleanLine.length >= 3 && !isGarbageText(cleanLine)
+        })
+        
+        content = cleanLines.join('\n')
+        
+        // Add metadata if available
+        if (pdfData.info) {
+          const metadata = []
+          if (pdfData.info.Title && pdfData.info.Title.trim() && !isGarbageText(pdfData.info.Title)) {
+            metadata.push(`Titel: ${cleanExtractedText(pdfData.info.Title)}`)
+          }
+          if (pdfData.info.Author && pdfData.info.Author.trim() && !isGarbageText(pdfData.info.Author)) {
+            metadata.push(`Auteur: ${cleanExtractedText(pdfData.info.Author)}`)
+          }
+          if (pdfData.info.Subject && pdfData.info.Subject.trim() && !isGarbageText(pdfData.info.Subject)) {
+            metadata.push(`Onderwerp: ${cleanExtractedText(pdfData.info.Subject)}`)
+          }
+          if (pdfData.numpages) {
+            metadata.push(`Aantal pagina's: ${pdfData.numpages}`)
+          }
+          
+          if (metadata.length > 0) {
+            content = `[PDF Metadata]\n${metadata.join('\n')}\n\n[PDF Inhoud]\n${content}`
+          }
+        }
+        
+        method = 'pdf-parse-enhanced'
+        success = true
+        
+        console.log(`✅ PDF-parse successful for ${filePath}: ${content.length} chars`)
+        
+        // Validate content quality
+        if (content.trim().length < 50 || isGarbageText(content)) {
+          throw new Error('Extracted content is mostly garbage')
+        }
+        
+        return { content, method, success }
+      }
+    }
+    
+    throw new Error('PDF-parse produced no usable content')
+    
+  } catch (pdfParseError) {
+    console.warn(`⚠️ PDF-parse failed for ${filePath}:`, pdfParseError.message)
+  }
+
+  // Strategy 2: Direct text extraction using regex patterns
+  try {
+    console.log(`🔄 Trying regex extraction for ${filePath}`)
+    
+    const pdfText = pdfBuffer.toString('latin1')
+    
+    // Enhanced regex patterns for different PDF text encodings
+    const patterns = [
+      // Standard text objects
+      /BT\s+.*?ET/gs,
+      // Text in parentheses (most common)
+      /\(([^)]{3,})\)/g,
+      // Text in brackets
+      /\[([^\]]{3,})\]/g,
+      // Tj operator with text
+      /Tj\s*\(([^)]{3,})\)/g,
+      // TJ operator with text array
+      /TJ\s*\[([^\]]{3,})\]/g,
+      // Show text operators
+      /'\s*\(([^)]{3,})\)/g,
+      /"\s*\(([^)]{3,})\)/g
+    ]
+    
+    let extractedTexts: string[] = []
+    
+    for (const pattern of patterns) {
+      const matches = [...pdfText.matchAll(pattern)]
+      for (const match of matches) {
+        let text = match[1] || match[0]
+        
+        // Clean up the matched text
+        text = text
+          .replace(/^BT\s*|\s*ET$/g, '') // Remove BT/ET
+          .replace(/^\(|\)$/g, '') // Remove parentheses
+          .replace(/^\[|\]$/g, '') // Remove brackets
+          .replace(/Tj\s*\(|\)/g, '') // Remove Tj operators
+          .replace(/TJ\s*\[|\]/g, '') // Remove TJ operators
+          .replace(/['"]\s*\(|\)/g, '') // Remove quote operators
+          .trim()
+        
+        if (text.length > 2 && /[a-zA-Z]/.test(text) && !isGarbageText(text)) {
+          extractedTexts.push(text)
+        }
+      }
+    }
+    
+    if (extractedTexts.length > 0) {
+      // Remove duplicates and sort by length (longer texts first)
+      const uniqueTexts = [...new Set(extractedTexts)]
+        .filter(text => text.length > 5)
+        .sort((a, b) => b.length - a.length)
+      
+      content = uniqueTexts.join(' ').replace(/\s+/g, ' ').trim()
+      content = cleanExtractedText(content)
+      
+      method = 'regex-extraction'
+      success = true
+      
+      console.log(`✅ Regex extraction successful for ${filePath}: ${content.length} chars`)
+      
+      if (content.length > 30 && !isGarbageText(content)) {
+        return { content, method, success }
+      }
+    }
+    
+    throw new Error('Regex extraction produced no usable content')
+    
+  } catch (regexError) {
+    console.warn(`⚠️ Regex extraction failed for ${filePath}:`, regexError.message)
+  }
+
+  // Strategy 3: Brute force text search
+  try {
+    console.log(`🔄 Trying brute force extraction for ${filePath}`)
+    
+    const pdfText = pdfBuffer.toString('utf8', 0, Math.min(pdfBuffer.length, 100000)) // First 100KB
+    
+    // Look for readable text sequences
+    const readableTexts = pdfText.match(/[a-zA-Z][a-zA-Z0-9\s.,!?;:()\-]{10,}/g) || []
+    
+    if (readableTexts.length > 0) {
+      const cleanTexts = readableTexts
+        .filter(text => !isGarbageText(text))
+        .map(text => cleanExtractedText(text))
+        .filter(text => text.length > 10)
+      
+      if (cleanTexts.length > 0) {
+        content = cleanTexts.join(' ').substring(0, 5000) // Limit to 5KB
+        method = 'brute-force'
+        success = true
+        
+        console.log(`✅ Brute force extraction found some text for ${filePath}: ${content.length} chars`)
+        return { content, method, success }
+      }
+    }
+    
+    throw new Error('Brute force extraction found no readable text')
+    
+  } catch (bruteError) {
+    console.warn(`⚠️ Brute force extraction failed for ${filePath}:`, bruteError.message)
+  }
+
+  // If all strategies fail, return descriptive error
+  throw new Error('All PDF text extraction strategies failed')
 }
 
 export async function POST(request: NextRequest) {
@@ -39,6 +268,7 @@ export async function POST(request: NextRequest) {
 
     try {
       // Download file content
+      console.log(`📥 Downloading ${filePath} (${fileType})`)
       const response = await dbx.filesDownload({ path: filePath })
       const fileBlob = (response.result as any).fileBinary
 
@@ -47,7 +277,7 @@ export async function POST(request: NextRequest) {
       let extractionSuccess = true
 
       if (fileType === 'text' || fileType === 'other') {
-        // For text files, convert buffer to string with multiple encoding attempts
+        // Enhanced text file processing
         try {
           if (fileBlob instanceof ArrayBuffer) {
             content = new TextDecoder('utf-8').decode(fileBlob)
@@ -66,7 +296,9 @@ export async function POST(request: NextRequest) {
             }
           }
           
+          content = cleanExtractedText(content)
           extractionMethod = 'text-encoding'
+          
         } catch (textError) {
           console.warn(`Text extraction failed for ${filePath}:`, textError)
           content = `[Tekstbestand: ${filePath}]\nFout bij tekstextractie. Bestand mogelijk beschadigd of gebruikt onbekende encoding.`
@@ -74,7 +306,7 @@ export async function POST(request: NextRequest) {
         }
         
       } else if (fileType === 'pdf') {
-        // VERBETERDE PDF parsing met betere tekstextractie
+        // KRITIEKE VERBETERING: Robuuste PDF parsing
         try {
           let pdfBuffer: Buffer
           
@@ -86,170 +318,17 @@ export async function POST(request: NextRequest) {
             pdfBuffer = Buffer.from(fileBlob)
           }
 
-          // Validate PDF buffer
-          if (pdfBuffer.length === 0) {
-            throw new Error('PDF bestand is leeg')
-          }
-
-          // Check if it's actually a PDF file
-          const pdfHeader = pdfBuffer.slice(0, 4).toString()
-          if (pdfHeader !== '%PDF') {
-            throw new Error('Bestand is geen geldig PDF formaat')
-          }
-
-          // Strategy 1: Try with pdf-parse with enhanced options
-          try {
-            const pdfParseLib = await initializePdfParse()
-            
-            if (!pdfParseLib) {
-              throw new Error('PDF-parse library not available')
-            }
-            
-            // Enhanced options for better text extraction
-            const options = {
-              max: 0, // No page limit
-              version: 'default',
-              // Disable worker to prevent issues
-              normalizeWhitespace: true,
-              disableCombineTextItems: false
-            }
-            
-            const pdfData = await pdfParseLib(pdfBuffer, options)
-            let extractedText = pdfData.text || ''
-            
-            // KRITIEKE VERBETERING: Tekst cleaning en normalisatie
-            if (extractedText) {
-              // Remove problematic characters and normalize text
-              extractedText = extractedText
-                // Remove null bytes and control characters
-                .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
-                // Normalize Unicode characters
-                .normalize('NFKC')
-                // Fix common PDF extraction issues
-                .replace(/([a-z])([A-Z])/g, '$1 $2') // Add space between camelCase
-                .replace(/([.!?])([A-Z])/g, '$1 $2') // Add space after sentence endings
-                .replace(/([a-zA-Z])(\d)/g, '$1 $2') // Add space between letters and numbers
-                .replace(/(\d)([a-zA-Z])/g, '$1 $2') // Add space between numbers and letters
-                // Normalize whitespace
-                .replace(/\s+/g, ' ')
-                .replace(/\n\s*\n/g, '\n\n')
-                .trim()
-              
-              // Filter out lines that are mostly garbage characters
-              const lines = extractedText.split('\n')
-              const cleanLines = lines.filter(line => {
-                const cleanLine = line.trim()
-                if (cleanLine.length < 3) return false
-                
-                // Check if line contains mostly readable characters
-                const readableChars = cleanLine.match(/[a-zA-Z0-9\s.,!?;:()\-]/g) || []
-                const readableRatio = readableChars.length / cleanLine.length
-                
-                return readableRatio > 0.7 // At least 70% readable characters
-              })
-              
-              content = cleanLines.join('\n')
-            }
-            
-            // Add comprehensive metadata if available
-            if (pdfData.info) {
-              const metadata = []
-              if (pdfData.info.Title && pdfData.info.Title.trim()) {
-                const title = pdfData.info.Title.trim().normalize('NFKC')
-                metadata.push(`Titel: ${title}`)
-              }
-              if (pdfData.info.Author && pdfData.info.Author.trim()) {
-                const author = pdfData.info.Author.trim().normalize('NFKC')
-                metadata.push(`Auteur: ${author}`)
-              }
-              if (pdfData.info.Subject && pdfData.info.Subject.trim()) {
-                const subject = pdfData.info.Subject.trim().normalize('NFKC')
-                metadata.push(`Onderwerp: ${subject}`)
-              }
-              if (pdfData.info.Creator && pdfData.info.Creator.trim()) {
-                const creator = pdfData.info.Creator.trim().normalize('NFKC')
-                metadata.push(`Gemaakt met: ${creator}`)
-              }
-              if (pdfData.numpages) metadata.push(`Aantal pagina's: ${pdfData.numpages}`)
-              
-              if (metadata.length > 0) {
-                content = `[PDF Metadata]\n${metadata.join('\n')}\n\n[PDF Inhoud]\n${content}`
-              }
-            }
-
-            extractionMethod = 'pdf-parse-enhanced'
-            
-            // Validate extracted content quality
-            if (!content || content.trim().length < 20) {
-              throw new Error('Geen bruikbare tekst geëxtraheerd')
-            }
-            
-          } catch (pdfParseError) {
-            console.warn(`PDF-parse failed for ${filePath}, trying alternative method:`, pdfParseError)
-            
-            // Strategy 2: Enhanced regex-based extraction
-            try {
-              const pdfText = pdfBuffer.toString('latin1')
-              
-              // Multiple regex patterns for different PDF text encodings
-              const patterns = [
-                /\(([^)]+)\)/g,  // Text in parentheses
-                /\[([^\]]+)\]/g, // Text in brackets
-                /BT\s+([^ET]+)\s+ET/g, // Text between BT and ET operators
-                /Tj\s*\(([^)]+)\)/g, // Tj operator with text
-                /TJ\s*\[([^\]]+)\]/g  // TJ operator with text array
-              ]
-              
-              let extractedTexts: string[] = []
-              
-              for (const pattern of patterns) {
-                const matches = pdfText.match(pattern)
-                if (matches) {
-                  extractedTexts.push(...matches.map(match => {
-                    // Clean up the matched text
-                    return match
-                      .replace(/^\(|\)$/g, '') // Remove parentheses
-                      .replace(/^\[|\]$/g, '') // Remove brackets
-                      .replace(/BT\s*|\s*ET/g, '') // Remove BT/ET
-                      .replace(/Tj\s*\(|\)/g, '') // Remove Tj operators
-                      .replace(/TJ\s*\[|\]/g, '') // Remove TJ operators
-                      .trim()
-                  }))
-                }
-              }
-              
-              if (extractedTexts.length > 0) {
-                // Filter and clean extracted text
-                const cleanTexts = extractedTexts
-                  .filter(text => text.length > 2 && /[a-zA-Z]/.test(text))
-                  .map(text => text.normalize('NFKC'))
-                  .filter(text => {
-                    // Filter out garbage text
-                    const readableChars = text.match(/[a-zA-Z0-9\s.,!?;:()\-]/g) || []
-                    return readableChars.length / text.length > 0.6
-                  })
-                
-                content = cleanTexts.join(' ').replace(/\s+/g, ' ').trim()
-                extractionMethod = 'pdf-regex-enhanced'
-              }
-              
-              if (!content || content.length < 20) {
-                throw new Error('Regex extractie leverde geen bruikbare tekst op')
-              }
-              
-            } catch (regexError) {
-              throw pdfParseError // Re-throw original error if regex also fails
-            }
-          }
-
-          // Final validation and fallback
-          if (!content || content.trim().length < 20) {
-            content = `[PDF bestand: ${filePath}]\n[Status: Tekst extractie mislukt]\n\nDit PDF bestand bevat mogelijk:\n- Alleen afbeeldingen (gescande documenten)\n- Beveiligde/versleutelde tekst\n- Complexe formatting\n- Niet-standaard encoding\n\nVoor betere doorzoekbaarheid:\n1. Gebruik OCR software voor gescande PDF's\n2. Converteer naar tekstformaat\n3. Controleer of het PDF beveiligd is\n\nBestand wordt geregistreerd voor bestandsnaam-zoekopdrachten.`
-            extractionSuccess = false
-          }
+          console.log(`🔍 Processing PDF: ${filePath} (${pdfBuffer.length} bytes)`)
+          
+          const result = await extractPdfText(pdfBuffer, filePath)
+          content = result.content
+          extractionMethod = result.method
+          extractionSuccess = result.success
+          
+          console.log(`✅ PDF processed successfully: ${filePath} using ${extractionMethod}`)
           
         } catch (pdfError) {
-          console.error('All PDF parsing strategies failed:', pdfError)
+          console.error(`❌ All PDF extraction failed for ${filePath}:`, pdfError)
           
           let errorMessage = 'Onbekende fout bij PDF verwerking'
           
@@ -265,7 +344,25 @@ export async function POST(request: NextRequest) {
             }
           }
           
-          content = `[PDF bestand: ${filePath}]\n[Status: Fout bij verwerking - ${errorMessage}]\n\nDit PDF bestand kon niet automatisch worden verwerkt.\n\nMogelijke oplossingen:\n- Converteer PDF naar tekstformaat\n- Gebruik OCR software voor gescande PDF's\n- Controleer of het bestand beschadigd is\n- Probeer een andere PDF viewer\n\nBestand wordt geregistreerd voor bestandsnaam-zoekopdrachten.`
+          content = `[PDF bestand: ${filePath}]
+[Status: Fout bij verwerking - ${errorMessage}]
+
+Dit PDF bestand kon niet automatisch worden verwerkt.
+
+Mogelijke oorzaken:
+- Gescand document (alleen afbeeldingen)
+- Beveiligd/versleuteld PDF
+- Beschadigd bestand
+- Complexe formatting
+
+Mogelijke oplossingen:
+- Converteer PDF naar tekstformaat
+- Gebruik OCR software voor gescande PDF's
+- Controleer of het bestand beschadigd is
+- Probeer een andere PDF viewer
+
+Bestand wordt geregistreerd voor bestandsnaam-zoekopdrachten.`
+          
           extractionSuccess = false
           extractionMethod = 'pdf-error-fallback'
         }
@@ -297,13 +394,7 @@ export async function POST(request: NextRequest) {
           
           // Clean and normalize DOCX content
           if (content) {
-            content = content
-              .normalize('NFKC')
-              .replace(/\r\n/g, '\n')
-              .replace(/\r/g, '\n')
-              .replace(/\s+/g, ' ')
-              .replace(/\n\s*\n/g, '\n\n')
-              .trim()
+            content = cleanExtractedText(content)
           }
           
           if (result.messages && result.messages.length > 0) {
@@ -358,7 +449,7 @@ export async function POST(request: NextRequest) {
 
       // Final content validation and cleaning
       if (content && content.length > 0) {
-        // Remove any remaining problematic characters
+        // Final cleanup
         content = content
           .replace(/\0/g, '') // Remove null bytes
           .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '') // Remove control characters
@@ -393,6 +484,8 @@ export async function POST(request: NextRequest) {
         content = `[Bestand: ${filePath}]\n[Type: ${fileType}]\n[Status: Geen tekstinhoud beschikbaar]\n\nDit bestand wordt geregistreerd voor bestandsnaam-gebaseerde zoekopdrachten.`
         extractionSuccess = false
       }
+
+      console.log(`✅ File processed: ${filePath} -> ${content.length} chars (${extractionMethod})`)
 
       return NextResponse.json({
         success: true,
