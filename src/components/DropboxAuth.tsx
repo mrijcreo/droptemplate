@@ -31,12 +31,17 @@ export default function DropboxAuth({ onAuthSuccess }: DropboxAuthProps) {
       if (data.success) {
         onAuthSuccess(manualToken.trim())
       } else {
-        setError(data.error || 'Ongeldige access token')
+        // Enhanced error handling for 401 errors
+        if (data.error && data.error.includes('401')) {
+          setError('Access token is ongeldig of verlopen. Genereer een nieuwe token in de Dropbox App Console.')
+        } else {
+          setError(data.error || 'Ongeldige access token')
+        }
       }
     })
     .catch(error => {
       console.error('Auth test error:', error)
-      setError('Fout bij het testen van de access token')
+      setError('Fout bij het testen van de access token. Controleer je internetverbinding.')
     })
     .finally(() => {
       setIsLoading(false)
@@ -61,14 +66,44 @@ export default function DropboxAuth({ onAuthSuccess }: DropboxAuthProps) {
           <ol className="list-decimal list-inside space-y-2 text-blue-700">
             <li>Ga naar <a href="https://www.dropbox.com/developers/apps" target="_blank" className="underline hover:text-blue-900">Dropbox App Console</a></li>
             <li>Klik op "Create app"</li>
-            <li>Kies "Scoped access" en "Full Dropbox"</li>
+            <li>Kies <strong>"Scoped access"</strong> en <strong>"Full Dropbox"</strong></li>
             <li>Geef je app een naam (bijv. "AI Search")</li>
             <li>Ga naar de "Settings" tab van je app</li>
             <li>Scroll naar "OAuth 2" sectie</li>
-            <li>Klik op "Generate access token"</li>
-            <li>Kopieer de token en plak deze hieronder</li>
+            <li>Klik op <strong>"Generate access token"</strong></li>
+            <li>Kopieer de <strong>volledige token</strong> en plak deze hieronder</li>
           </ol>
         </div>
+
+        {/* 401 Error Help */}
+        {error && error.includes('401') && (
+          <div className="bg-red-50 border border-red-200 rounded-lg p-6">
+            <h3 className="text-lg font-semibold text-red-800 mb-3 flex items-center">
+              <svg className="w-5 h-5 mr-2" fill="currentColor" viewBox="0 0 20 20">
+                <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+              </svg>
+              Token Probleem Opgelost
+            </h3>
+            <div className="space-y-3 text-red-700">
+              <p><strong>Je access token is ongeldig of verlopen.</strong> Dit kan gebeuren omdat:</p>
+              <ul className="list-disc list-inside space-y-1 ml-4">
+                <li>De token is verlopen (tokens verlopen na een tijd)</li>
+                <li>De app permissions zijn niet correct ingesteld</li>
+                <li>Er zijn extra spaties of karakters in de token</li>
+              </ul>
+              <div className="bg-red-100 p-4 rounded-lg mt-4">
+                <p className="font-semibold">Oplossing:</p>
+                <ol className="list-decimal list-inside space-y-1 mt-2">
+                  <li>Ga terug naar <a href="https://www.dropbox.com/developers/apps" target="_blank" className="underline font-semibold">Dropbox App Console</a></li>
+                  <li>Selecteer je app</li>
+                  <li>Ga naar "Settings" → "OAuth 2"</li>
+                  <li>Klik op <strong>"Generate access token"</strong> (dit maakt een nieuwe)</li>
+                  <li>Kopieer de nieuwe token en probeer opnieuw</li>
+                </ol>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Manual Token Input */}
         <div className="space-y-4">
@@ -85,6 +120,9 @@ export default function DropboxAuth({ onAuthSuccess }: DropboxAuthProps) {
               className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
               disabled={isLoading}
             />
+            <p className="text-xs text-gray-500 mt-1">
+              Zorg ervoor dat je de volledige token kopieert zonder extra spaties
+            </p>
           </div>
 
           {error && (
@@ -117,6 +155,17 @@ export default function DropboxAuth({ onAuthSuccess }: DropboxAuthProps) {
               </>
             )}
           </button>
+        </div>
+
+        {/* Token Requirements */}
+        <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+          <h4 className="text-sm font-medium text-green-800 mb-2">✅ Vereisten voor je Dropbox App</h4>
+          <ul className="text-sm text-green-700 space-y-1">
+            <li>• <strong>Access type:</strong> "Scoped access"</li>
+            <li>• <strong>Permission type:</strong> "Full Dropbox"</li>
+            <li>• <strong>Permissions:</strong> files.metadata.read, files.content.read</li>
+            <li>• <strong>Token type:</strong> Access token (niet App key/secret)</li>
+          </ul>
         </div>
 
         {/* Security Note */}
