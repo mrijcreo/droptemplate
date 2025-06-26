@@ -1,7 +1,6 @@
 'use client'
 
 import { useState, useEffect, useRef } from 'react'
-import { Document, Paragraph, TextRun } from 'docx'
 import GeminiTTS, { GEMINI_VOICES, EMOTION_STYLES } from './GeminiTTS'
 
 interface ResponseActionsProps {
@@ -140,9 +139,9 @@ export default function ResponseActions({
   }
 
   // Advanced markdown to Word document converter
-  const convertMarkdownToWordDocument = (markdown: string): Document => {
+  const convertMarkdownToWordDocument = (markdown: string, Document: any, Paragraph: any, TextRun: any) => {
     const lines = markdown.split('\n')
-    const paragraphs: Paragraph[] = []
+    const paragraphs: any[] = []
     let currentBulletList: string[] = []
     let currentNumberedList: Array<{number: string, text: string}> = []
     let isInCodeBlock = false
@@ -155,7 +154,7 @@ export default function ResponseActions({
     const flushBulletList = () => {
       if (currentBulletList.length > 0) {
         currentBulletList.forEach(item => {
-          const formattedRuns = parseInlineFormatting(item)
+          const formattedRuns = parseInlineFormatting(item, TextRun)
           paragraphs.push(new Paragraph({
             children: [new TextRun({ text: "• " }), ...formattedRuns],
             spacing: { after: 120 },
@@ -169,7 +168,7 @@ export default function ResponseActions({
     const flushNumberedList = () => {
       if (currentNumberedList.length > 0) {
         currentNumberedList.forEach(item => {
-          const formattedRuns = parseInlineFormatting(item.text)
+          const formattedRuns = parseInlineFormatting(item.text, TextRun)
           paragraphs.push(new Paragraph({
             children: [new TextRun({ text: `${item.number}. ` }), ...formattedRuns],
             spacing: { after: 120 },
@@ -226,7 +225,7 @@ export default function ResponseActions({
     const flushBlockquote = () => {
       if (blockquoteContent.length > 0) {
         blockquoteContent.forEach(line => {
-          const formattedRuns = parseInlineFormatting(line)
+          const formattedRuns = parseInlineFormatting(line, TextRun)
           paragraphs.push(new Paragraph({
             children: formattedRuns,
             spacing: { after: 120 },
@@ -241,8 +240,8 @@ export default function ResponseActions({
     }
 
     // Parse inline formatting (bold, italic, code, links, strikethrough)
-    const parseInlineFormatting = (text: string): TextRun[] => {
-      const runs: TextRun[] = []
+    const parseInlineFormatting = (text: string, TextRun: any): any[] => {
+      const runs: any[] = []
       
       // Enhanced regex to handle complex combinations
       const regex = /(\*\*\*[^*]+\*\*\*|\*\*[^*]+\*\*|\*[^*]+\*|___[^_]+___|__[^_]+__|_[^_]+_|`[^`]+`|~~[^~]+~~|\[([^\]]+)\]\(([^)]+)\))/g
@@ -396,10 +395,10 @@ export default function ResponseActions({
         flushNumberedList()
         const level = headerMatch[1].length
         const headerText = headerMatch[2]
-        const formattedRuns = parseInlineFormatting(headerText)
+        const formattedRuns = parseInlineFormatting(headerText, TextRun)
 
         paragraphs.push(new Paragraph({
-          children: formattedRuns.map(run => new TextRun({
+          children: formattedRuns.map((run: any) => new TextRun({
             ...run,
             bold: true,
             size: level === 1 ? 32 : level === 2 ? 28 : level === 3 ? 24 : level === 4 ? 22 : level === 5 ? 20 : 18,
@@ -434,7 +433,7 @@ export default function ResponseActions({
         flushBulletList()
         flushNumberedList()
         
-        const formattedRuns = parseInlineFormatting(trimmedLine)
+        const formattedRuns = parseInlineFormatting(trimmedLine, TextRun)
         paragraphs.push(new Paragraph({
           children: formattedRuns,
           spacing: { after: 200 }
@@ -480,10 +479,10 @@ export default function ResponseActions({
     setWordDownloadStatus('generating')
     
     try {
-      // Import Packer dynamically to avoid SSR issues
-      const { Packer } = await import('docx')
+      // Import all docx components dynamically to avoid SSR issues
+      const { Packer, Document, Paragraph, TextRun } = await import('docx')
       
-      const doc = convertMarkdownToWordDocument(content)
+      const doc = convertMarkdownToWordDocument(content, Document, Paragraph, TextRun)
       const blob = await Packer.toBlob(doc)
       
       // Create download link
@@ -955,4 +954,4 @@ export default function ResponseActions({
       )}
     </div>
   )
-} 
+}
