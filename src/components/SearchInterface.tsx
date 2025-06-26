@@ -44,6 +44,7 @@ export default function SearchInterface({ fileIndex, accessToken }: SearchInterf
   const [searchHistory, setSearchHistory] = useState<SearchHistory[]>([])
   const [showHistory, setShowHistory] = useState(false)
   const [isExportingPDF, setIsExportingPDF] = useState(false)
+  const [showSearchResults, setShowSearchResults] = useState(false) // NIEUWE STATE: Controleert of zoekresultaten getoond worden
   const abortControllerRef = useRef<AbortController | null>(null)
 
   // Reset all search data
@@ -53,6 +54,7 @@ export default function SearchInterface({ fileIndex, accessToken }: SearchInterf
     setAiResponse('')
     setIsStreaming(false)
     setSearchStats({ filesSearched: 0, totalFiles: 0, searchTime: 0 })
+    setShowSearchResults(false) // Reset search results visibility
     if (abortControllerRef.current) {
       abortControllerRef.current.abort()
     }
@@ -83,9 +85,9 @@ export default function SearchInterface({ fileIndex, accessToken }: SearchInterf
     setSearchMode(historyItem.mode)
     setAiResponse(historyItem.response)
     if (historyItem.mode === 'search') {
-      // Note: We can't restore exact search results, but we can show the response
       setSearchResults([])
       setSearchStats({ filesSearched: fileIndex.length, totalFiles: fileIndex.length, searchTime: 0 })
+      setShowSearchResults(false) // Don't show search results from history
     }
     setShowHistory(false)
   }
@@ -100,21 +102,14 @@ export default function SearchInterface({ fileIndex, accessToken }: SearchInterf
     setIsExportingPDF(true)
     
     try {
-      // Dynamic import to avoid SSR issues
       const jsPDF = (await import('jspdf')).default
-
-      // Create new PDF document
       const doc = new jsPDF()
       
-      // Set font
       doc.setFont('helvetica')
-      
-      // Add title
       doc.setFontSize(16)
       doc.setFont('helvetica', 'bold')
       doc.text('AI Zoekresultaat', 20, 20)
       
-      // Add query info
       doc.setFontSize(12)
       doc.setFont('helvetica', 'normal')
       doc.text(`Query: ${query}`, 20, 35)
@@ -125,26 +120,21 @@ export default function SearchInterface({ fileIndex, accessToken }: SearchInterf
         doc.text(`Gevonden bestanden: ${searchResults.length}`, 20, 65)
       }
 
-      // Add separator line
       doc.line(20, 75, 190, 75)
 
-      // Convert markdown to plain text for PDF
       const plainTextResponse = convertMarkdownToPlainText(aiResponse)
       
-      // Add response content
       doc.setFontSize(10)
       doc.setFont('helvetica', 'normal')
       
-      // Split text into lines that fit the page width
-      const pageWidth = 170 // Available width (210 - 40 for margins)
+      const pageWidth = 170
       const lineHeight = 6
       let yPosition = 85
       
       const lines = doc.splitTextToSize(plainTextResponse, pageWidth)
       
       for (let i = 0; i < lines.length; i++) {
-        // Check if we need a new page
-        if (yPosition > 280) { // Near bottom of page
+        if (yPosition > 280) {
           doc.addPage()
           yPosition = 20
         }
@@ -153,7 +143,6 @@ export default function SearchInterface({ fileIndex, accessToken }: SearchInterf
         yPosition += lineHeight
       }
 
-      // Add footer with file info
       const pageCount = doc.getNumberOfPages()
       for (let i = 1; i <= pageCount; i++) {
         doc.setPage(i)
@@ -162,11 +151,9 @@ export default function SearchInterface({ fileIndex, accessToken }: SearchInterf
         doc.text(`Gegenereerd door Dropbox AI Search - Pagina ${i} van ${pageCount}`, 20, 290)
       }
 
-      // Generate filename
       const timestamp = new Date().toISOString().slice(0, 16).replace('T', '_').replace(/:/g, '-')
       const filename = `AI_Zoekresultaat_${timestamp}.pdf`
       
-      // Save the PDF
       doc.save(filename)
       
     } catch (error) {
@@ -201,6 +188,7 @@ export default function SearchInterface({ fileIndex, accessToken }: SearchInterf
     setSearchResults([])
     setAiResponse('')
     setIsStreaming(false)
+    setShowSearchResults(false) // BELANGRIJK: Verberg zoekresultaten tijdens nieuwe zoekopdracht
 
     const startTime = Date.now()
 
@@ -230,12 +218,13 @@ export default function SearchInterface({ fileIndex, accessToken }: SearchInterf
         searchTime: Date.now() - startTime
       })
 
-      // If we have results, generate AI response
+      // KRITIEKE WIJZIGING: Genereer ALTIJD AI response, toon NOOIT zoekresultaten onderaan
       if (results.length > 0) {
         const response = await generateAIResponse(query, results)
         addToHistory(query, 'search', results.length, response)
+        // setShowSearchResults(false) blijft false - zoekresultaten worden NOOIT getoond
       } else {
-        const noResultsResponse = 'Geen relevante bestanden gevonden voor je zoekopdracht.'
+        const noResultsResponse = 'Geen relevante bestanden gevonden voor je zoekopdracht. Probeer andere zoektermen of controleer of je bestanden correct zijn geïndexeerd.'
         setAiResponse(noResultsResponse)
         addToHistory(query, 'search', 0, noResultsResponse)
       }
@@ -258,6 +247,7 @@ export default function SearchInterface({ fileIndex, accessToken }: SearchInterf
     setAiResponse('')
     setIsStreaming(false)
     setSearchStats({ filesSearched: 0, totalFiles: 0, searchTime: 0 })
+    setShowSearchResults(false) // Ensure search results are hidden for direct AI questions
 
     try {
       const response = await generateDirectAIResponse(query)
@@ -280,17 +270,37 @@ export default function SearchInterface({ fileIndex, accessToken }: SearchInterf
     abortControllerRef.current = new AbortController()
 
     try {
-      // Prepare context from search results
-      const context = results.map((result, index) => {
-        return `[Bestand ${index + 1}: ${result.file.name}]\nPad: ${result.file.path}\nInhoud:\n${result.matchedContent}\n\n---\n`
+      // VERBETERDE CONTEXT PREPARATIE: Alleen de beste en meest relevante content
+      const topResults = results.slice(0, 5) // Limiteer tot top 5 resultaten voor betere focus
+      
+      const context = topResults.map((result, index) => {
+        // Verkort de matched content voor betere AI processing
+        const shortContent = result.matchedContent.length > 800 
+          ? result.matchedContent.substring(0, 800) + '...' 
+          : result.matchedContent
+          
+        return `[Bestand ${index + 1}: ${result.file.name}]
+Pad: ${result.file.path}
+Relevantie: ${Math.round(result.relevanceScore * 100)}%
+Inhoud: ${shortContent}
+
+---`
       }).join('\n')
 
-      const prompt = `Gebaseerd op de volgende bestanden uit de Dropbox van de gebruiker, beantwoord de vraag: "${query}"
+      const prompt = `Beantwoord de vraag "${query}" op basis van de gevonden bestanden uit de Dropbox van de gebruiker.
 
 GEVONDEN BESTANDEN:
 ${context}
 
-Geef een uitgebreid en nuttig antwoord gebaseerd op de inhoud van deze bestanden. Verwijs specifiek naar de bestandsnamen en paden waar relevant. Als de informatie niet volledig is, geef dan aan wat er ontbreekt.`
+INSTRUCTIES:
+- Geef een duidelijk en uitgebreid antwoord gebaseerd op de inhoud van deze bestanden
+- Verwijs specifiek naar bestandsnamen waar relevant
+- Als informatie ontbreekt, geef dat duidelijk aan
+- Structureer je antwoord logisch met kopjes waar nuttig
+- Citeer relevante passages uit de bestanden
+- Geef praktische tips of vervolgstappen waar mogelijk
+
+Antwoord:`
 
       const response = await fetch('/api/ai-response', {
         method: 'POST',
@@ -608,7 +618,7 @@ Geef een duidelijk en uitgebreid antwoord. Als je aanvullende context of verduid
               onKeyPress={handleKeyPress}
               placeholder={
                 searchMode === 'search' 
-                  ? "Stel een vraag over je bestanden... (bijv. 'Wat staat er in mijn projectdocumenten?')"
+                  ? "Stel een vraag over je bestanden... (bijv. 'Wat staat er over rubrieken in mijn documenten?')"
                   : "Stel een vraag aan Gemini AI... (bijv. 'Leg uit hoe machine learning werkt')"
               }
               className={`w-full px-4 py-3 border-2 rounded-lg focus:ring-2 focus:ring-offset-2 transition-all ${
@@ -649,12 +659,12 @@ Geef een duidelijk en uitgebreid antwoord. Als je aanvullende context of verduid
           </button>
         </div>
 
-        {/* Search Stats - only show in search mode */}
-        {searchMode === 'search' && searchStats.totalFiles > 0 && (
+        {/* Search Stats - only show in search mode and only when there are results */}
+        {searchMode === 'search' && searchStats.totalFiles > 0 && searchResults.length > 0 && (
           <div className="bg-gray-50 rounded-lg p-4">
             <div className="flex items-center justify-between text-sm text-gray-600">
               <span>
-                {searchResults.length} resultaten gevonden in {searchStats.filesSearched} bestanden
+                {searchResults.length} relevante bestanden gevonden in {searchStats.filesSearched} bestanden
               </span>
               <span>
                 Zoektijd: {searchStats.searchTime}ms
@@ -663,7 +673,7 @@ Geef een duidelijk en uitgebreid antwoord. Als je aanvullende context of verduid
           </div>
         )}
 
-        {/* AI Response */}
+        {/* AI Response - ALTIJD TONEN ALS BESCHIKBAAR */}
         {(aiResponse || isStreaming) && (
           <div className={`border rounded-lg p-6 ${
             searchMode === 'search' 
@@ -706,56 +716,11 @@ Geef een duidelijk en uitgebreid antwoord. Als je aanvullende context of verduid
           </div>
         )}
 
-        {/* Search Results - only show in search mode */}
-        {searchMode === 'search' && searchResults.length > 0 && (
-          <div className="space-y-4">
-            <h3 className="text-lg font-semibold text-gray-800">
-              Gevonden Bestanden ({searchResults.length})
-            </h3>
-            
-            <div className="space-y-3">
-              {searchResults.map((result, index) => (
-                <div key={result.file.id} className="bg-gray-50 border border-gray-200 rounded-lg p-4">
-                  <div className="flex items-start justify-between mb-2">
-                    <div className="flex-1">
-                      <h4 className="font-medium text-gray-800 flex items-center">
-                        <span className="text-lg mr-2">
-                          {result.file.type === 'text' ? '📄' : 
-                           result.file.type === 'pdf' ? '📕' : 
-                           result.file.type === 'docx' ? '📘' : 
-                           result.file.type === 'image' ? '🖼️' : '📁'}
-                        </span>
-                        {result.file.name}
-                      </h4>
-                      <p className="text-sm text-gray-600">{result.file.path}</p>
-                      <div className="flex items-center space-x-4 text-xs text-gray-500 mt-1">
-                        <span>{(result.file.size / 1024).toFixed(1)} KB</span>
-                        <span>{new Date(result.file.modified).toLocaleDateString('nl-NL')}</span>
-                        <span className="bg-blue-100 text-blue-700 px-2 py-1 rounded">
-                          Relevantie: {Math.round(result.relevanceScore * 100)}%
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                  
-                  {result.matchedContent && (
-                    <div className="mt-3 p-3 bg-white rounded border">
-                      <p className="text-sm text-gray-700 whitespace-pre-wrap">
-                        {result.matchedContent.length > 300 
-                          ? result.matchedContent.substring(0, 300) + '...' 
-                          : result.matchedContent
-                        }
-                      </p>
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
+        {/* VERWIJDERD: Search Results sectie - deze wordt NOOIT meer getoond */}
+        {/* De zoekresultaten worden alleen gebruikt voor AI context, niet voor weergave */}
 
-        {/* No Results - only show in search mode */}
-        {searchMode === 'search' && !isSearching && query && searchResults.length === 0 && aiResponse && (
+        {/* No Results - only show in search mode when no AI response yet */}
+        {searchMode === 'search' && !isSearching && query && searchResults.length === 0 && !aiResponse && (
           <div className="text-center py-8">
             <div className="text-6xl mb-4">🔍</div>
             <h3 className="text-lg font-medium text-gray-800 mb-2">Geen bestanden gevonden</h3>
@@ -781,10 +746,10 @@ Geef een duidelijk en uitgebreid antwoord. Als je aanvullende context of verduid
           }`}>
             {searchMode === 'search' ? (
               <>
-                <li>• Stel specifieke vragen: "Wat zijn mijn projectdeadlines?"</li>
-                <li>• Zoek op onderwerp: "Alle documenten over marketing"</li>
-                <li>• Vraag om samenvattingen: "Vat mijn vergadernotities samen"</li>
-                <li>• Zoek naar specifieke informatie: "Contactgegevens van klanten"</li>
+                <li>• Stel specifieke vragen: "Wat staat er over rubrieken in mijn documenten?"</li>
+                <li>• Zoek op onderwerp: "Alle informatie over evaluatie en beoordeling"</li>
+                <li>• Vraag om samenvattingen: "Vat de belangrijkste punten samen uit mijn Canvas bestanden"</li>
+                <li>• Zoek naar specifieke informatie: "Welke criteria worden gebruikt voor beoordeling?"</li>
               </>
             ) : (
               <>

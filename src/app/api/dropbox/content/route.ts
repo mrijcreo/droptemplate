@@ -52,7 +52,7 @@ export async function POST(request: NextRequest) {
         }
         
       } else if (fileType === 'pdf') {
-        // Robuuste PDF parsing met meerdere fallback strategieën
+        // VERBETERDE PDF parsing met betere tekstextractie
         try {
           let pdfBuffer: Buffer
           
@@ -75,32 +75,75 @@ export async function POST(request: NextRequest) {
             throw new Error('Bestand is geen geldig PDF formaat')
           }
 
-          // Strategy 1: Try with pdf-parse with safe options
+          // Strategy 1: Try with pdf-parse with enhanced options
           try {
             const pdfParse = await import('pdf-parse').then(module => module.default)
             
-            // Use safe options to prevent worker issues and file system access
+            // Enhanced options for better text extraction
             const options = {
-              // Disable any file system access
               max: 0, // No page limit
               version: 'default',
-              // Disable worker to prevent pdfjs-dist issues in Node.js environment
-              pdfjs: { disableWorker: true }
+              // Disable worker to prevent issues
+              normalizeWhitespace: true,
+              disableCombineTextItems: false
             }
             
             const pdfData = await pdfParse(pdfBuffer, options)
-            content = pdfData.text || ''
+            let extractedText = pdfData.text || ''
             
-            // Add comprehensive metadata
+            // KRITIEKE VERBETERING: Tekst cleaning en normalisatie
+            if (extractedText) {
+              // Remove problematic characters and normalize text
+              extractedText = extractedText
+                // Remove null bytes and control characters
+                .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
+                // Normalize Unicode characters
+                .normalize('NFKC')
+                // Fix common PDF extraction issues
+                .replace(/([a-z])([A-Z])/g, '$1 $2') // Add space between camelCase
+                .replace(/([.!?])([A-Z])/g, '$1 $2') // Add space after sentence endings
+                .replace(/([a-zA-Z])(\d)/g, '$1 $2') // Add space between letters and numbers
+                .replace(/(\d)([a-zA-Z])/g, '$1 $2') // Add space between numbers and letters
+                // Normalize whitespace
+                .replace(/\s+/g, ' ')
+                .replace(/\n\s*\n/g, '\n\n')
+                .trim()
+              
+              // Filter out lines that are mostly garbage characters
+              const lines = extractedText.split('\n')
+              const cleanLines = lines.filter(line => {
+                const cleanLine = line.trim()
+                if (cleanLine.length < 3) return false
+                
+                // Check if line contains mostly readable characters
+                const readableChars = cleanLine.match(/[a-zA-Z0-9\s.,!?;:()\-]/g) || []
+                const readableRatio = readableChars.length / cleanLine.length
+                
+                return readableRatio > 0.7 // At least 70% readable characters
+              })
+              
+              content = cleanLines.join('\n')
+            }
+            
+            // Add comprehensive metadata if available
             if (pdfData.info) {
               const metadata = []
-              if (pdfData.info.Title && pdfData.info.Title.trim()) metadata.push(`Titel: ${pdfData.info.Title.trim()}`)
-              if (pdfData.info.Author && pdfData.info.Author.trim()) metadata.push(`Auteur: ${pdfData.info.Author.trim()}`)
-              if (pdfData.info.Subject && pdfData.info.Subject.trim()) metadata.push(`Onderwerp: ${pdfData.info.Subject.trim()}`)
-              if (pdfData.info.Creator && pdfData.info.Creator.trim()) metadata.push(`Gemaakt met: ${pdfData.info.Creator.trim()}`)
-              if (pdfData.info.Producer && pdfData.info.Producer.trim()) metadata.push(`Verwerkt met: ${pdfData.info.Producer.trim()}`)
-              if (pdfData.info.CreationDate) metadata.push(`Aangemaakt: ${pdfData.info.CreationDate}`)
-              if (pdfData.info.ModDate) metadata.push(`Gewijzigd: ${pdfData.info.ModDate}`)
+              if (pdfData.info.Title && pdfData.info.Title.trim()) {
+                const title = pdfData.info.Title.trim().normalize('NFKC')
+                metadata.push(`Titel: ${title}`)
+              }
+              if (pdfData.info.Author && pdfData.info.Author.trim()) {
+                const author = pdfData.info.Author.trim().normalize('NFKC')
+                metadata.push(`Auteur: ${author}`)
+              }
+              if (pdfData.info.Subject && pdfData.info.Subject.trim()) {
+                const subject = pdfData.info.Subject.trim().normalize('NFKC')
+                metadata.push(`Onderwerp: ${subject}`)
+              }
+              if (pdfData.info.Creator && pdfData.info.Creator.trim()) {
+                const creator = pdfData.info.Creator.trim().normalize('NFKC')
+                metadata.push(`Gemaakt met: ${creator}`)
+              }
               if (pdfData.numpages) metadata.push(`Aantal pagina's: ${pdfData.numpages}`)
               
               if (metadata.length > 0) {
@@ -108,32 +151,74 @@ export async function POST(request: NextRequest) {
               }
             }
 
-            extractionMethod = 'pdf-parse-safe'
+            extractionMethod = 'pdf-parse-enhanced'
+            
+            // Validate extracted content quality
+            if (!content || content.trim().length < 20) {
+              throw new Error('Geen bruikbare tekst geëxtraheerd')
+            }
             
           } catch (pdfParseError) {
             console.warn(`PDF-parse failed for ${filePath}, trying alternative method:`, pdfParseError)
             
-            // Strategy 2: Basic PDF text extraction fallback
-            const pdfText = pdfBuffer.toString('binary')
-            const textMatches = pdfText.match(/\(([^)]+)\)/g)
-            
-            if (textMatches && textMatches.length > 0) {
-              content = textMatches
-                .map(match => match.slice(1, -1)) // Remove parentheses
-                .filter(text => text.length > 2 && /[a-zA-Z]/.test(text)) // Filter meaningful text
-                .join(' ')
-                .replace(/\s+/g, ' ')
-                .trim()
+            // Strategy 2: Enhanced regex-based extraction
+            try {
+              const pdfText = pdfBuffer.toString('latin1')
               
-              extractionMethod = 'pdf-regex-fallback'
-            } else {
-              throw pdfParseError // Re-throw if no fallback worked
+              // Multiple regex patterns for different PDF text encodings
+              const patterns = [
+                /\(([^)]+)\)/g,  // Text in parentheses
+                /\[([^\]]+)\]/g, // Text in brackets
+                /BT\s+([^ET]+)\s+ET/g, // Text between BT and ET operators
+                /Tj\s*\(([^)]+)\)/g, // Tj operator with text
+                /TJ\s*\[([^\]]+)\]/g  // TJ operator with text array
+              ]
+              
+              let extractedTexts: string[] = []
+              
+              for (const pattern of patterns) {
+                const matches = pdfText.match(pattern)
+                if (matches) {
+                  extractedTexts.push(...matches.map(match => {
+                    // Clean up the matched text
+                    return match
+                      .replace(/^\(|\)$/g, '') // Remove parentheses
+                      .replace(/^\[|\]$/g, '') // Remove brackets
+                      .replace(/BT\s*|\s*ET/g, '') // Remove BT/ET
+                      .replace(/Tj\s*\(|\)/g, '') // Remove Tj operators
+                      .replace(/TJ\s*\[|\]/g, '') // Remove TJ operators
+                      .trim()
+                  }))
+                }
+              }
+              
+              if (extractedTexts.length > 0) {
+                // Filter and clean extracted text
+                const cleanTexts = extractedTexts
+                  .filter(text => text.length > 2 && /[a-zA-Z]/.test(text))
+                  .map(text => text.normalize('NFKC'))
+                  .filter(text => {
+                    // Filter out garbage text
+                    const readableChars = text.match(/[a-zA-Z0-9\s.,!?;:()\-]/g) || []
+                    return readableChars.length / text.length > 0.6
+                  })
+                
+                content = cleanTexts.join(' ').replace(/\s+/g, ' ').trim()
+                extractionMethod = 'pdf-regex-enhanced'
+              }
+              
+              if (!content || content.length < 20) {
+                throw new Error('Regex extractie leverde geen bruikbare tekst op')
+              }
+              
+            } catch (regexError) {
+              throw pdfParseError // Re-throw original error if regex also fails
             }
           }
 
-          // If no meaningful text was extracted
+          // Final validation and fallback
           if (!content || content.trim().length < 20) {
-            content = `[PDF bestand: ${filePath}]\n[Metadata: ${pdfBuffer.length} bytes, PDF versie gedetecteerd]\n\nDit PDF bestand bevat mogelijk:\n- Alleen afbeeldingen (gescande documenten)\n- Beveiligde/versleutelde tekst\n- Complexe formatting die niet geëxtraheerd kan worden\n\nOm de inhoud volledig doorzoekbaar te maken:\n1. Gebruik OCR software voor gescande PDF's\n2. Controleer of het PDF beveiligd is\n3. Probeer het PDF opnieuw op te slaan vanuit de originele applicatie`
+            content = `[PDF bestand: ${filePath}]\n[Status: Tekst extractie mislukt]\n\nDit PDF bestand bevat mogelijk:\n- Alleen afbeeldingen (gescande documenten)\n- Beveiligde/versleutelde tekst\n- Complexe formatting\n- Niet-standaard encoding\n\nVoor betere doorzoekbaarheid:\n1. Gebruik OCR software voor gescande PDF's\n2. Converteer naar tekstformaat\n3. Controleer of het PDF beveiligd is\n\nBestand wordt geregistreerd voor bestandsnaam-zoekopdrachten.`
             extractionSuccess = false
           }
           
@@ -143,9 +228,7 @@ export async function POST(request: NextRequest) {
           let errorMessage = 'Onbekende fout bij PDF verwerking'
           
           if (pdfError instanceof Error) {
-            if (pdfError.message.includes('ENOENT') || pdfError.message.includes('test/data')) {
-              errorMessage = 'PDF parser configuratiefout - bestand wordt overgeslagen maar indexering gaat door'
-            } else if (pdfError.message.includes('Invalid PDF') || pdfError.message.includes('not a valid')) {
+            if (pdfError.message.includes('Invalid PDF') || pdfError.message.includes('not a valid')) {
               errorMessage = 'Ongeldig PDF formaat'
             } else if (pdfError.message.includes('encrypted') || pdfError.message.includes('password')) {
               errorMessage = 'PDF is beveiligd met een wachtwoord'
@@ -156,13 +239,13 @@ export async function POST(request: NextRequest) {
             }
           }
           
-          content = `[PDF bestand: ${filePath}]\n[Status: Fout bij verwerking - ${errorMessage}]\n\nDit PDF bestand kon niet automatisch worden verwerkt, maar andere bestanden worden wel geïndexeerd.\n\nMogelijke oplossingen:\n- Converteer PDF naar tekstformaat\n- Gebruik OCR software voor gescande PDF's\n- Controleer of het bestand beschadigd is\n- Probeer een andere PDF viewer\n\nHet zoeksysteem blijft werken voor alle andere bestanden.`
+          content = `[PDF bestand: ${filePath}]\n[Status: Fout bij verwerking - ${errorMessage}]\n\nDit PDF bestand kon niet automatisch worden verwerkt.\n\nMogelijke oplossingen:\n- Converteer PDF naar tekstformaat\n- Gebruik OCR software voor gescande PDF's\n- Controleer of het bestand beschadigd is\n- Probeer een andere PDF viewer\n\nBestand wordt geregistreerd voor bestandsnaam-zoekopdrachten.`
           extractionSuccess = false
           extractionMethod = 'pdf-error-fallback'
         }
         
       } else if (fileType === 'docx') {
-        // Robuuste DOCX parsing met fallback
+        // Enhanced DOCX parsing
         try {
           const mammoth = (await import('mammoth')).default
           let docxBuffer: Buffer
@@ -175,66 +258,42 @@ export async function POST(request: NextRequest) {
             docxBuffer = Buffer.from(fileBlob)
           }
 
-          // Validate DOCX buffer
           if (docxBuffer.length === 0) {
             throw new Error('DOCX bestand is leeg')
           }
           
-          // Try mammoth extraction with options
           const result = await mammoth.extractRawText({ 
             buffer: docxBuffer,
-            // Add options for better extraction
             includeEmbeddedStyleMap: true
           })
           
           content = result.value || ''
           
-          // Process warnings and messages
+          // Clean and normalize DOCX content
+          if (content) {
+            content = content
+              .normalize('NFKC')
+              .replace(/\r\n/g, '\n')
+              .replace(/\r/g, '\n')
+              .replace(/\s+/g, ' ')
+              .replace(/\n\s*\n/g, '\n\n')
+              .trim()
+          }
+          
           if (result.messages && result.messages.length > 0) {
             const warnings = result.messages
               .filter(msg => msg.type === 'warning')
+              .slice(0, 3)
               .map(msg => msg.message)
-              .slice(0, 5) // Limit warnings
               .join('\n')
             
-            const errors = result.messages
-              .filter(msg => msg.type === 'error')
-              .map(msg => msg.message)
-              .slice(0, 3) // Limit errors
-              .join('\n')
-            
-            let messageInfo = ''
-            if (warnings) messageInfo += `[Waarschuwingen]\n${warnings}\n\n`
-            if (errors) messageInfo += `[Fouten]\n${errors}\n\n`
-            
-            if (messageInfo) {
-              content = `${messageInfo}[DOCX Inhoud]\n${content}`
-            }
-          }
-
-          // If no content extracted, try alternative approach
-          if (!content || content.trim().length < 10) {
-            // Try to extract any text using different method
-            const zipContent = docxBuffer.toString('binary')
-            const textMatches = zipContent.match(/>([^<]+)</g)
-            
-            if (textMatches && textMatches.length > 0) {
-              const extractedText = textMatches
-                .map(match => match.slice(1, -1)) // Remove > and <
-                .filter(text => text.length > 2 && /[a-zA-Z]/.test(text))
-                .join(' ')
-                .replace(/\s+/g, ' ')
-                .trim()
-              
-              if (extractedText.length > 20) {
-                content = `[DOCX Inhoud - Alternatieve extractie]\n${extractedText}`
-                extractionMethod = 'docx-regex-fallback'
-              }
+            if (warnings) {
+              content = `[DOCX Extractie Info]\n${warnings}\n\n[DOCX Inhoud]\n${content}`
             }
           }
 
           if (!content || content.trim().length < 10) {
-            content = `[DOCX bestand: ${filePath}]\n[Status: Geen tekstinhoud geëxtraheerd]\n\nDit Word document bevat mogelijk:\n- Alleen afbeeldingen of tabellen\n- Complexe formatting\n- Beveiligde inhoud\n- Lege pagina's\n\nTip: Open het bestand in Word en sla het opnieuw op als .docx of .txt voor betere compatibiliteit.`
+            content = `[DOCX bestand: ${filePath}]\n[Status: Geen tekstinhoud geëxtraheerd]\n\nDit Word document bevat mogelijk alleen afbeeldingen, tabellen of complexe formatting.\n\nTip: Open het bestand in Word en sla het opnieuw op als .docx of .txt voor betere compatibiliteit.`
             extractionSuccess = false
           } else {
             extractionMethod = 'mammoth-success'
@@ -245,67 +304,50 @@ export async function POST(request: NextRequest) {
           
           let errorMessage = 'Onbekende fout bij DOCX verwerking'
           if (docxError instanceof Error) {
-            if (docxError.message.includes('not a valid zip file') || docxError.message.includes('zip')) {
-              errorMessage = 'Bestand is geen geldig DOCX formaat (geen ZIP structuur)'
+            if (docxError.message.includes('not a valid zip file')) {
+              errorMessage = 'Bestand is geen geldig DOCX formaat'
             } else if (docxError.message.includes('corrupted')) {
               errorMessage = 'DOCX bestand is beschadigd'
-            } else if (docxError.message.includes('password') || docxError.message.includes('encrypted')) {
-              errorMessage = 'DOCX bestand is beveiligd'
             } else {
               errorMessage = docxError.message
             }
           }
           
-          content = `[DOCX bestand: ${filePath}]\n[Status: Fout bij verwerking - ${errorMessage}]\n\nDit Word document kon niet worden verwerkt, maar andere bestanden worden wel geïndexeerd.\n\nMogelijke oplossingen:\n- Open in Microsoft Word en sla opnieuw op\n- Converteer naar .txt of .pdf formaat\n- Controleer of het bestand beschadigd is\n- Verwijder eventuele wachtwoordbeveiliging\n\nHet zoeksysteem blijft werken voor alle andere bestanden.`
+          content = `[DOCX bestand: ${filePath}]\n[Status: Fout bij verwerking - ${errorMessage}]\n\nDit Word document kon niet worden verwerkt.\n\nMogelijke oplossingen:\n- Open in Microsoft Word en sla opnieuw op\n- Converteer naar .txt formaat\n- Controleer of het bestand beschadigd is\n\nBestand wordt geregistreerd voor bestandsnaam-zoekopdrachten.`
           extractionSuccess = false
           extractionMethod = 'docx-error-fallback'
         }
         
       } else if (fileType === 'image') {
-        // Enhanced image handling met meer informatie
-        const imageInfo = []
+        // Image handling - provide useful placeholder
+        const fileName = filePath.split('/').pop() || 'unknown'
+        const fileExt = fileName.split('.').pop()?.toLowerCase() || 'unknown'
+        const fileSize = fileBlob instanceof ArrayBuffer ? fileBlob.byteLength : 
+                        Buffer.isBuffer(fileBlob) ? fileBlob.length : 
+                        String(fileBlob).length
         
-        // Try to get basic image info
-        try {
-          const fileName = filePath.split('/').pop() || 'unknown'
-          const fileExt = fileName.split('.').pop()?.toLowerCase() || 'unknown'
-          const fileSize = fileBlob instanceof ArrayBuffer ? fileBlob.byteLength : 
-                          Buffer.isBuffer(fileBlob) ? fileBlob.length : 
-                          String(fileBlob).length
-          
-          imageInfo.push(`Bestandsnaam: ${fileName}`)
-          imageInfo.push(`Formaat: ${fileExt.toUpperCase()}`)
-          imageInfo.push(`Grootte: ${(fileSize / 1024).toFixed(1)} KB`)
-          
-        } catch (infoError) {
-          console.warn('Could not extract image info:', infoError)
-        }
-        
-        content = `[Afbeelding: ${filePath}]\n${imageInfo.join('\n')}\n\nAfbeelding gedetecteerd. Voor volledige doorzoekbaarheid zou OCR (Optical Character Recognition) geïmplementeerd kunnen worden.\n\nDeze afbeelding kan bevatten:\n- Tekst (documenten, screenshots, presentaties)\n- Diagrammen en grafieken\n- Foto's met tekst (borden, documenten)\n\nToekomstige functionaliteit:\n- Automatische tekstherkenning (OCR)\n- Objectdetectie en beschrijving\n- Handschriftherkenning\n\nTip: Als deze afbeelding belangrijke tekst bevat, kun je:\n1. Een OCR-tool gebruiken om de tekst te extraheren\n2. De tekst handmatig transcriberen\n3. Het bestand converteren naar een tekstformaat`
+        content = `[Afbeelding: ${fileName}]\nFormaat: ${fileExt.toUpperCase()}\nGrootte: ${(fileSize / 1024).toFixed(1)} KB\n\nAfbeelding gedetecteerd. Voor tekstextractie uit afbeeldingen zou OCR (Optical Character Recognition) geïmplementeerd kunnen worden.`
         extractionMethod = 'image-placeholder'
       }
 
-      // Enhanced content validation and cleaning
+      // Final content validation and cleaning
       if (content && content.length > 0) {
-        // Remove problematic characters but preserve structure
+        // Remove any remaining problematic characters
         content = content
           .replace(/\0/g, '') // Remove null bytes
+          .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '') // Remove control characters
           .replace(/\r\n/g, '\n') // Normalize line endings
           .replace(/\r/g, '\n')
-          .replace(/\f/g, '\n') // Replace form feeds with newlines
-          .replace(/\v/g, '\n') // Replace vertical tabs with newlines
-        
-        // Remove excessive whitespace but preserve paragraph structure
-        content = content
-          .replace(/[ \t]+/g, ' ') // Multiple spaces/tabs to single space
-          .replace(/\n[ \t]+/g, '\n') // Remove leading whitespace on lines
-          .replace(/[ \t]+\n/g, '\n') // Remove trailing whitespace on lines
+          .replace(/\f/g, '\n') // Replace form feeds
+          .replace(/\v/g, '\n') // Replace vertical tabs
+          .replace(/[ \t]+/g, ' ') // Multiple spaces to single space
+          .replace(/\n[ \t]+/g, '\n') // Remove leading whitespace
+          .replace(/[ \t]+\n/g, '\n') // Remove trailing whitespace
           .replace(/\n{4,}/g, '\n\n\n') // Max 3 consecutive newlines
           .trim()
         
-        // If content is too large, truncate intelligently
-        if (content.length > 200000) { // Increased limit for better coverage
-          // Try to truncate at a sentence or paragraph boundary
+        // Intelligent truncation for very large files
+        if (content.length > 200000) {
           let truncateAt = 200000
           const sentenceEnd = content.lastIndexOf('.', truncateAt)
           const paragraphEnd = content.lastIndexOf('\n\n', truncateAt)
@@ -316,23 +358,14 @@ export async function POST(request: NextRequest) {
             truncateAt = paragraphEnd + 2
           }
           
-          content = content.substring(0, truncateAt) + '\n\n[Bestand ingekort - te groot voor volledige indexering. Eerste 200.000 karakters getoond. Voor volledige inhoud, open het originele bestand.]'
+          content = content.substring(0, truncateAt) + '\n\n[Bestand ingekort - eerste 200.000 karakters getoond voor indexering]'
         }
       }
 
-      // Ensure we always have some content for indexing
+      // Ensure we always have indexable content
       if (!content || content.trim().length < 3) {
-        content = `[Bestand: ${filePath}]\n[Type: ${fileType}]\n[Status: Geen tekstinhoud beschikbaar]\n\nDit bestand kon niet worden gelezen of bevat geen tekstuele inhoud.\n\nMogelijke redenen:\n- Leeg bestand\n- Binair formaat zonder tekst\n- Beschadigd bestand\n- Niet-ondersteund formaat\n- Technische fout bij verwerking\n\nHet bestand wordt wel geregistreerd in de index voor bestandsnaam-gebaseerde zoekopdrachten.`
+        content = `[Bestand: ${filePath}]\n[Type: ${fileType}]\n[Status: Geen tekstinhoud beschikbaar]\n\nDit bestand wordt geregistreerd voor bestandsnaam-gebaseerde zoekopdrachten.`
         extractionSuccess = false
-      }
-
-      // Add file processing summary
-      const processingInfo = {
-        success: extractionSuccess,
-        method: extractionMethod,
-        contentLength: content.length,
-        hasContent: content.trim().length > 50,
-        timestamp: new Date().toISOString()
       }
 
       return NextResponse.json({
@@ -345,8 +378,7 @@ export async function POST(request: NextRequest) {
                      Buffer.isBuffer(fileBlob) ? fileBlob.length : 
                      String(fileBlob).length,
         extractionMethod: extractionMethod,
-        extractionSuccess: extractionSuccess,
-        processingInfo: processingInfo
+        extractionSuccess: extractionSuccess
       })
 
     } catch (dropboxError: any) {
@@ -359,11 +391,11 @@ export async function POST(request: NextRequest) {
         errorMessage = dropboxError.message
       }
 
-      // Return a fallback content even for download errors
-      const fallbackContent = `[Bestand: ${filePath}]\n[Status: Download fout]\n[Fout: ${errorMessage}]\n\nDit bestand kon niet worden gedownload van Dropbox.\n\nMogelijke oorzaken:\n- Netwerkproblemen\n- Bestand is verplaatst of verwijderd\n- Toegangsrechten gewijzigd\n- Dropbox API limiet bereikt\n\nHet bestand wordt geregistreerd voor bestandsnaam-gebaseerde zoekopdrachten.`
+      // Return fallback content for download errors
+      const fallbackContent = `[Bestand: ${filePath}]\n[Status: Download fout - ${errorMessage}]\n\nDit bestand kon niet worden gedownload van Dropbox maar wordt geregistreerd voor bestandsnaam-zoekopdrachten.`
 
       return NextResponse.json({
-        success: true, // Still return success to continue indexing other files
+        success: true,
         content: fallbackContent,
         filePath: filePath,
         fileType: fileType,
@@ -378,12 +410,11 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     console.error('Content API error:', error)
     
-    // Even for API errors, try to return something useful
-    const errorContent = `[API Fout voor bestand: ${request.url}]\n[Fout: ${error instanceof Error ? error.message : 'Unknown error'}]\n\nEr is een technische fout opgetreden bij het verwerken van dit bestand.\n\nHet indexeringsproces gaat door met andere bestanden.`
+    const errorContent = `[API Fout]\n[Fout: ${error instanceof Error ? error.message : 'Unknown error'}]\n\nTechnische fout bij bestandsverwerking. Indexering gaat door met andere bestanden.`
     
     return NextResponse.json(
       { 
-        success: true, // Continue with other files
+        success: true,
         content: errorContent,
         filePath: 'unknown',
         fileType: 'error',
@@ -393,7 +424,7 @@ export async function POST(request: NextRequest) {
         extractionSuccess: false,
         error: error instanceof Error ? error.message : 'Unknown error' 
       },
-      { status: 200 } // Return 200 to continue processing
+      { status: 200 }
     )
   }
 }
