@@ -136,6 +136,22 @@
     "@jridgewell/resolve-uri" "^3.1.0"
     "@jridgewell/sourcemap-codec" "^1.4.14"
 
+"@napi-rs/canvas@^0.1.65":
+  version "0.1.72"
+  resolved "https://registry.npmjs.org/@napi-rs/canvas/-/canvas-0.1.72.tgz"
+  integrity sha512-ypTJ/DXzsJbTU3o7qXFlWmZGgEbh42JWQl7v5/i+DJz/HURELcSnq9ler9e1ukqma70JzmCQcIseiE/Xs6sczw==
+  optionalDependencies:
+    "@napi-rs/canvas-android-arm64" "0.1.72"
+    "@napi-rs/canvas-darwin-arm64" "0.1.72"
+    "@napi-rs/canvas-darwin-x64" "0.1.72"
+    "@napi-rs/canvas-linux-arm-gnueabihf" "0.1.72"
+    "@napi-rs/canvas-linux-arm64-gnu" "0.1.72"
+    "@napi-rs/canvas-linux-arm64-musl" "0.1.72"
+    "@napi-rs/canvas-linux-riscv64-gnu" "0.1.72"
+    "@napi-rs/canvas-linux-x64-gnu" "0.1.72"
+    "@napi-rs/canvas-linux-x64-musl" "0.1.72"
+    "@napi-rs/canvas-win32-x64-msvc" "0.1.72"
+
 "@next/env@15.3.3":
   version "15.3.3"
   resolved "https://registry.npmjs.org/@next/env/-/env-15.3.3.tgz"
@@ -2451,6 +2467,13 @@ pdf-parse@^1.1.1:
   dependencies:
     debug "^3.1.0"
     node-ensure "^0.0.0"
+
+pdfjs-dist@^4.0.379:
+  version "4.10.38"
+  resolved "https://registry.npmjs.org/pdfjs-dist/-/pdfjs-dist-4.10.38.tgz"
+  integrity sha512-/Y3fcFrXEAsMjJXeL9J8+ZG9U01LbuWaYypvDW2ycW1jL269L3js3DVBjDJ0Up9Np1uqDXsDrRihHANhZOlwdQ==
+  optionalDependencies:
+    "@napi-rs/canvas" "^0.1.65"
 
 performance-now@^2.1.0:
   version "2.1.0"
