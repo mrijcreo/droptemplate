@@ -595,67 +595,67 @@ export default function FileIndexer({
 
         {/* Enhanced Info with PDF Focus */}
         <div className="bg-gradient-to-r from-red-50 to-orange-50 border border-red-200 rounded-lg p-6">
-          <h4 className="text-lg font-bold text-red-800 mb-4">📄 FOCUS: Alleen PDF Bestanden - Maximale Tekstextractie</h4>
+          <h4 className="text-lg font-bold text-red-800 mb-4">📄 INDEXERING SYSTEEM: PDF Bestanden Permanent Opslaan</h4>
           
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
             <div className="bg-white border border-green-200 rounded-lg p-4">
-              <h5 className="text-sm font-semibold text-green-800 mb-3">✅ PDF Extractie Strategieën:</h5>
+              <h5 className="text-sm font-semibold text-green-800 mb-3">✅ Hoe Indexering Werkt:</h5>
               <ul className="text-xs text-green-700 space-y-1">
-                <li>• <strong>Strategie 1:</strong> Enhanced pdf-parse met optimale instellingen</li>
-                <li>• <strong>Strategie 2:</strong> Direct stream extractie uit PDF structuur</li>
-                <li>• <strong>Strategie 3:</strong> Character-level detectie voor complexe PDF's</li>
-                <li>• <strong>Tekst cleaning:</strong> Verwijdering van garbage karakters</li>
-                <li>• <strong>Encoding fix:</strong> UTF-8, Latin1, ASCII fallbacks</li>
-                <li>• <strong>Kwaliteitscontrole:</strong> Filtering van onleesbare content</li>
+                <li>• <strong>Permanente opslag:</strong> PDF inhoud wordt lokaal opgeslagen in browser</li>
+                <li>• <strong>Eenmalig proces:</strong> Na indexering kun je direct zoeken zonder herlaad</li>
+                <li>• <strong>Slimme updates:</strong> Alleen nieuwe/gewijzigde PDF's worden opnieuw verwerkt</li>
+                <li>• <strong>Volledige reset:</strong> Optie om alle data te wissen en opnieuw te beginnen</li>
+                <li>• <strong>Offline zoeken:</strong> Na indexering werkt zoeken zonder internetverbinding</li>
+                <li>• <strong>Snelle toegang:</strong> Geïndexeerde PDF's zijn onmiddellijk doorzoekbaar</li>
               </ul>
             </div>
             
             <div className="bg-white border border-orange-200 rounded-lg p-4">
-              <h5 className="text-sm font-semibold text-orange-800 mb-3">🛡️ PDF Specifieke Verbeteringen:</h5>
+              <h5 className="text-sm font-semibold text-orange-800 mb-3">🔄 Reset Opties:</h5>
               <ul className="text-xs text-orange-700 space-y-1">
-                <li>• <strong>Alleen PDF's:</strong> Gefocuste verwerking voor betere resultaten</li>
-                <li>• <strong>Multiple encodings:</strong> Automatische detectie van beste encoding</li>
-                <li>• <strong>Text stream parsing:</strong> Directe extractie uit PDF streams</li>
-                <li>• <strong>Garbage filtering:</strong> Intelligente detectie van leesbare tekst</li>
-                <li>• <strong>Metadata extractie:</strong> Titel, auteur, onderwerp</li>
-                <li>• <strong>Error handling:</strong> Graceful degradation voor problematische PDF's</li>
+                <li>• <strong>Slimme Update:</strong> Voegt alleen nieuwe PDF's toe aan bestaande index</li>
+                <li>• <strong>Volledige Reset:</strong> Wist alle data en herindexeert alle PDF's grondig</li>
+                <li>• <strong>Incrementeel:</strong> Detecteert automatisch gewijzigde bestanden</li>
+                <li>• <strong>Betrouwbaar:</strong> Retry mechanisme voor gefaalde downloads</li>
+                <li>• <strong>Transparant:</strong> Live voortgang en gedetailleerde logging</li>
+                <li>• <strong>Flexibel:</strong> Kies zelf wanneer je wilt updaten of resetten</li>
               </ul>
             </div>
           </div>
 
           <div className="bg-white border border-blue-200 rounded-lg p-4">
-            <h5 className="text-sm font-semibold text-blue-800 mb-3">🔧 Technische PDF Verbeteringen:</h5>
+            <h5 className="text-sm font-semibold text-blue-800 mb-3">🎯 Voordelen van Indexering:</h5>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <ul className="text-xs text-blue-700 space-y-1">
-                <li>• <strong>PDF validatie:</strong> Controle op geldig PDF formaat</li>
-                <li>• <strong>Buffer optimalisatie:</strong> Efficiënte memory handling</li>
-                <li>• <strong>Retry mechanisme:</strong> 3 pogingen met exponential backoff</li>
-                <li>• <strong>Live monitoring:</strong> Real-time PDF voortgang</li>
+                <li>• <strong>Snelle zoekopdrachten:</strong> Onmiddellijke resultaten zonder API calls</li>
+                <li>• <strong>Offline functionaliteit:</strong> Zoeken werkt zonder internetverbinding</li>
+                <li>• <strong>Geavanceerde zoekfuncties:</strong> Synoniemen, relevantie scoring</li>
+                <li>• <strong>Persistente data:</strong> Eenmaal geïndexeerd, altijd beschikbaar</li>
               </ul>
               <ul className="text-xs text-blue-700 space-y-1">
-                <li>• <strong>Content validation:</strong> Kwaliteitscontrole van geëxtraheerde tekst</li>
-                <li>• <strong>Intelligent truncation:</strong> Behoud van zinvolle content</li>
-                <li>• <strong>Error continuity:</strong> PDF fouten stoppen niet de hele indexering</li>
-                <li>• <strong>Fallback content:</strong> Informatieve foutmeldingen</li>
+                <li>• <strong>Efficiënt:</strong> Geen herhaalde PDF downloads</li>
+                <li>• <strong>Betrouwbaar:</strong> Lokale opslag voorkomt dataverlies</li>
+                <li>• <strong>Schaalbaar:</strong> Werkt met honderden PDF bestanden</li>
+                <li>• <strong>Privacy:</strong> Alle data blijft lokaal in je browser</li>
               </ul>
             </div>
           </div>
 
           <div className="mt-4 p-3 bg-green-50 rounded border border-green-200">
-            <p className="text-xs text-green-800 font-medium">✅ PROBLEEM OPGELOST:</p>
+            <p className="text-xs text-green-800 font-medium">✅ SYSTEEM HERSTELD:</p>
             <p className="text-xs text-green-700 mt-1">
-              De app focust nu ALLEEN op PDF bestanden en gebruikt geavanceerde tekstextractie strategieën. 
-              Garbage tekst wordt automatisch gefilterd en alleen leesbare PDF content wordt geïndexeerd. 
-              Zoeken naar termen zoals "rubrieken" zal nu correct werken in PDF documenten.
+              Het indexering systeem is volledig hersteld! Na indexering kun je direct zoeken in je PDF bestanden. 
+              De volgende keer dat je de app opent, zijn je geïndexeerde PDF's onmiddellijk beschikbaar voor zoeken 
+              zonder opnieuw te hoeven laden.
             </p>
           </div>
 
           <div className="mt-4 p-3 bg-blue-50 rounded border border-blue-200">
-            <p className="text-xs text-blue-800 font-medium">🔍 PDF ZOEKEN VERBETERD:</p>
+            <p className="text-xs text-blue-800 font-medium">🔍 ZOEKEN VERBETERD:</p>
             <p className="text-xs text-blue-700 mt-1">
-              Met de verbeterde PDF parsing en focus op alleen PDF bestanden zal zoeken naar educatieve termen 
-              zoals "rubrieken", "evaluatie", "beoordeling" nu correct werken omdat de werkelijke tekstinhoud 
-              van PDF's wordt geëxtraheerd in plaats van technische metadata.
+              Met de verbeterde PDF parsing en indexering systeem zal zoeken naar educatieve termen 
+              zoals "rubrieken", "evaluatie", "beoordeling" perfect werken omdat de werkelijke tekstinhoud 
+              van PDF's wordt geëxtraheerd en permanent opgeslagen voor snelle zoekopdrachten.
             </p>
           </div>
         </div>
