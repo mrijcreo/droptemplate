@@ -59,20 +59,55 @@ export default function FileIndexer({
 
   const handleResetChoice = (resetFromZero: boolean) => {
     setShowResetOptions(false)
+    
     if (resetFromZero) {
-      // Clear existing index and start fresh
-      onIndexComplete([])
+      // KRITISCH: Volledig wissen van alle oude data
+      console.log('🗑️ VOLLEDIGE RESET: Alle oude data wordt gewist...')
+      
+      // 1. Wis localStorage volledig
       localStorage.removeItem('dropbox_file_index')
       localStorage.removeItem('dropbox_last_indexed')
+      
+      // 2. Wis parent state onmiddellijk
+      onIndexComplete([])
+      
+      // 3. Reset alle lokale state
+      setIndexingStats({
+        totalFiles: 0,
+        processedFiles: 0,
+        textFiles: 0,
+        skippedFiles: 0,
+        errors: 0,
+        pdfFiles: 0,
+        docxFiles: 0,
+        imageFiles: 0,
+        successfulExtractions: 0,
+        partialExtractions: 0
+      })
+      setProcessingDetails([])
+      setIndexingStatus('🗑️ Alle oude data gewist. Starten met volledige herindexering...')
+      
+      // 4. Korte delay om UI te laten updaten
+      setTimeout(() => {
+        startIndexing(true)
+      }, 500)
+    } else {
+      startIndexing(false)
     }
-    startIndexing(resetFromZero)
   }
 
   const startIndexing = async (resetFromZero: boolean = false) => {
     setIsIndexing(true)
     setIndexingError('')
-    setIndexingStatus('🔍 Bestanden ophalen van Dropbox...')
-    setProcessingDetails([])
+    
+    if (resetFromZero) {
+      setIndexingStatus('🔄 VOLLEDIGE HERINDEXERING: Alle bestanden worden grondig opnieuw verwerkt...')
+      setProcessingDetails(['🗑️ Alle oude data gewist', '🔄 Starten met volledige herindexering...'])
+    } else {
+      setIndexingStatus('🔍 Bestanden ophalen van Dropbox...')
+      setProcessingDetails([])
+    }
+    
     setIndexingStats({
       totalFiles: 0,
       processedFiles: 0,
@@ -131,14 +166,16 @@ export default function FileIndexer({
 
         setIndexingStatus(`📊 ${allFiles.length} bestanden gevonden. ${filesToProcess.length} nieuwe/gewijzigde bestanden te verwerken...`)
       } else {
-        setIndexingStatus(`📊 ${allFiles.length} bestanden gevonden. Alle bestanden grondig indexeren...`)
+        setIndexingStatus(`📊 ${allFiles.length} bestanden gevonden. ALLE bestanden worden grondig geïndexeerd...`)
+        setProcessingDetails(prev => [...prev, `📊 Totaal te verwerken: ${allFiles.length} bestanden`])
       }
 
+      // KRITISCH: Bij volledige reset start met lege array
       const fileIndex: FileIndex[] = resetFromZero ? [] : [...existingIndex]
       let processed = 0
 
-      // If no new files to process
-      if (filesToProcess.length === 0) {
+      // If no new files to process (only for incremental updates)
+      if (!resetFromZero && filesToProcess.length === 0) {
         setIndexingStatus(`✅ Geen nieuwe bestanden gevonden. Index is up-to-date met ${existingIndex.length} bestanden.`)
         onIndexComplete(existingIndex)
         setIsIndexing(false)
@@ -252,16 +289,18 @@ export default function FileIndexer({
                 type: fileType
               }
 
-              // If updating existing file, remove old version
-              if (!resetFromZero) {
+              // KRITISCH: Bij volledige reset GEEN duplicaat controle
+              if (resetFromZero) {
+                return newFileIndex
+              } else {
+                // Bij incrementele update: vervang bestaand bestand
                 const existingIndex = fileIndex.findIndex(f => f.path === file.path_display)
                 if (existingIndex !== -1) {
                   fileIndex[existingIndex] = newFileIndex
                   return null // Don't add duplicate
                 }
+                return newFileIndex
               }
-
-              return newFileIndex
             } else {
               setIndexingStats(prev => ({ ...prev, skippedFiles: prev.skippedFiles + 1 }))
               setProcessingDetails(prev => [...prev, `⏭️ Geen inhoud: ${file.name}`])
@@ -303,14 +342,18 @@ export default function FileIndexer({
         const totalIndexed = fileIndex.length
         const newlyProcessed = resetFromZero ? totalIndexed : processed
         
-        setIndexingStatus(`🔄 Verwerkt: ${processed}/${filesToProcess.length} ${resetFromZero ? 'bestanden' : 'nieuwe bestanden'} (${totalIndexed} totaal geïndexeerd)`)
+        if (resetFromZero) {
+          setIndexingStatus(`🔄 VOLLEDIGE HERINDEXERING: ${processed}/${filesToProcess.length} bestanden verwerkt (${totalIndexed} totaal geïndexeerd)`)
+        } else {
+          setIndexingStatus(`🔄 Verwerkt: ${processed}/${filesToProcess.length} nieuwe bestanden (${totalIndexed} totaal geïndexeerd)`)
+        }
 
         // Longer delay between batches to prevent rate limiting and allow processing
         await new Promise(resolve => setTimeout(resolve, 800))
       }
 
       const successMessage = resetFromZero 
-        ? `🎉 Volledige herindexering voltooid! ${fileIndex.length} bestanden geïndexeerd van ${allFiles.length} totaal.`
+        ? `🎉 VOLLEDIGE HERINDEXERING VOLTOOID! ${fileIndex.length} bestanden grondig geïndexeerd van ${allFiles.length} totaal. Alle oude data vervangen.`
         : `🎉 Incrementele update voltooid! ${processed} nieuwe/gewijzigde bestanden verwerkt. Totaal: ${fileIndex.length} bestanden.`
       
       setIndexingStatus(successMessage)
@@ -319,15 +362,18 @@ export default function FileIndexer({
       setProcessingDetails(prev => [
         ...prev,
         '',
-        '📊 SAMENVATTING:',
+        resetFromZero ? '📊 VOLLEDIGE HERINDEXERING SAMENVATTING:' : '📊 INCREMENTELE UPDATE SAMENVATTING:',
         `✅ Succesvol: ${indexingStats.successfulExtractions + 1} bestanden`,
         `⚠️ Gedeeltelijk: ${indexingStats.partialExtractions} bestanden`,
         `❌ Fouten: ${indexingStats.errors} bestanden`,
         `⏭️ Overgeslagen: ${indexingStats.skippedFiles} bestanden`,
-        `📁 Totaal geïndexeerd: ${fileIndex.length} bestanden`
+        `📁 Totaal geïndexeerd: ${fileIndex.length} bestanden`,
+        resetFromZero ? '🗑️ Alle oude data vervangen door nieuwe index' : '🔄 Bestaande data bijgewerkt'
       ])
       
       console.log(successMessage)
+      
+      // KRITISCH: Sla nieuwe index op en update parent state
       onIndexComplete(fileIndex)
 
     } catch (error: any) {
@@ -483,8 +529,9 @@ export default function FileIndexer({
                     <span className="font-semibold text-red-800">Volledig Opnieuw Beginnen</span>
                   </div>
                   <p className="text-sm text-red-700 ml-9">
-                    Wis alle bestaande data en indexeer alle bestanden grondig opnieuw. 
-                    Dit duurt langer maar zorgt voor maximale dekking en kwaliteit.
+                    <strong>WIS ALLE BESTAANDE DATA</strong> en indexeer alle bestanden grondig opnieuw. 
+                    Dit duurt langer maar zorgt voor maximale dekking en kwaliteit. Vroegere gewiste bestanden 
+                    worden definitief uit het geheugen verwijderd.
                   </p>
                 </button>
 
@@ -657,6 +704,15 @@ export default function FileIndexer({
                 <li>• <strong>Fout continuïteit:</strong> Eén fout stopt niet de hele indexering</li>
               </ul>
             </div>
+          </div>
+
+          <div className="mt-4 p-3 bg-red-50 rounded border border-red-200">
+            <p className="text-xs text-red-800 font-medium">🗑️ VOLLEDIGE RESET WAARSCHUWING:</p>
+            <p className="text-xs text-red-700 mt-1">
+              Bij een volledige reset wordt ALLE bestaande data permanent gewist uit het geheugen. 
+              Vroegere gewiste bestanden worden definitief verwijderd en alle bestanden worden 
+              grondig opnieuw geïndexeerd. Dit zorgt voor maximale kwaliteit maar duurt langer.
+            </p>
           </div>
 
           <div className="mt-4 p-3 bg-yellow-50 rounded border border-yellow-200">
