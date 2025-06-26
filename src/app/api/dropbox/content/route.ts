@@ -77,6 +77,10 @@ export async function POST(request: NextRequest) {
 
           // Strategy 1: Try with pdf-parse but with safe options
           try {
+            // Configure pdfjs-dist to prevent file system access
+            const pdfjsLib = await import('pdfjs-dist/legacy/build/pdf.js')
+            pdfjsLib.GlobalWorkerOptions.workerSrc = ''
+            
             const pdfParse = await import('pdf-parse').then(module => module.default)
             
             // Use safe options to prevent test file access
