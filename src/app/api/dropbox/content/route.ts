@@ -58,12 +58,8 @@ export async function POST(request: NextRequest) {
           // Dynamic import to avoid the test file issue
           const pdfParse = await import('pdf-parse').then(module => module.default)
           
-          // Parse PDF with options to avoid test file conflicts
-          const pdfData = await pdfParse(pdfBuffer, {
-            // Disable any test-related functionality
-            max: 0, // Parse all pages
-            version: 'v1.10.100' // Specify version to avoid conflicts
-          })
+          // Parse PDF without options that might trigger test file access
+          const pdfData = await pdfParse(pdfBuffer)
           
           content = pdfData.text || ''
           
