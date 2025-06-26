@@ -36,14 +36,10 @@ export default function FileIndexer({
   const [indexingStats, setIndexingStats] = useState({
     totalFiles: 0,
     processedFiles: 0,
-    textFiles: 0,
+    successfulPdfs: 0,
+    failedPdfs: 0,
     skippedFiles: 0,
-    errors: 0,
-    pdfFiles: 0,
-    docxFiles: 0,
-    imageFiles: 0,
-    successfulExtractions: 0,
-    partialExtractions: 0
+    errors: 0
   })
   const [showResetOptions, setShowResetOptions] = useState(false)
   const [processingDetails, setProcessingDetails] = useState<string[]>([])
@@ -75,18 +71,14 @@ export default function FileIndexer({
       setIndexingStats({
         totalFiles: 0,
         processedFiles: 0,
-        textFiles: 0,
+        successfulPdfs: 0,
+        failedPdfs: 0,
         skippedFiles: 0,
-        errors: 0,
-        pdfFiles: 0,
-        docxFiles: 0,
-        imageFiles: 0,
-        successfulExtractions: 0,
-        partialExtractions: 0
+        errors: 0
       })
       setProcessingDetails([])
       setIndexingError('')
-      setIndexingStatus('🗑️ Alle oude data gewist. Starten met volledige herindexering...')
+      setIndexingStatus('🗑️ Alle oude data gewist. Starten met volledige PDF herindexering...')
       
       // 4. Korte delay om UI te laten updaten
       setTimeout(() => {
@@ -102,31 +94,27 @@ export default function FileIndexer({
     setIndexingError('')
     
     if (resetFromZero) {
-      setIndexingStatus('🔄 VOLLEDIGE HERINDEXERING: Alle bestanden worden grondig opnieuw verwerkt...')
-      setProcessingDetails(['🗑️ Alle oude data gewist', '🔄 Starten met volledige herindexering...'])
+      setIndexingStatus('🔄 VOLLEDIGE PDF HERINDEXERING: Alle PDF bestanden worden grondig opnieuw verwerkt...')
+      setProcessingDetails(['🗑️ Alle oude data gewist', '🔄 Starten met volledige PDF herindexering...'])
     } else {
-      setIndexingStatus('🔍 Bestanden ophalen van Dropbox...')
+      setIndexingStatus('🔍 PDF bestanden ophalen van Dropbox...')
       setProcessingDetails([])
     }
     
     setIndexingStats({
       totalFiles: 0,
       processedFiles: 0,
-      textFiles: 0,
+      successfulPdfs: 0,
+      failedPdfs: 0,
       skippedFiles: 0,
-      errors: 0,
-      pdfFiles: 0,
-      docxFiles: 0,
-      imageFiles: 0,
-      successfulExtractions: 0,
-      partialExtractions: 0
+      errors: 0
     })
 
     // Create abort controller for cancellation
     abortControllerRef.current = new AbortController()
 
     try {
-      // First, get all files from Dropbox
+      // First, get all PDF files from Dropbox
       const filesResponse = await fetch('/api/dropbox/files', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -135,17 +123,17 @@ export default function FileIndexer({
       })
 
       if (!filesResponse.ok) {
-        throw new Error('Fout bij ophalen bestanden van Dropbox')
+        throw new Error('Fout bij ophalen PDF bestanden van Dropbox')
       }
 
       const filesData = await filesResponse.json()
-      const allFiles = filesData.files || []
+      const allPdfFiles = filesData.files || []
       
-      setIndexingStats(prev => ({ ...prev, totalFiles: allFiles.length }))
-      onIndexProgress(0, allFiles.length)
+      setIndexingStats(prev => ({ ...prev, totalFiles: allPdfFiles.length }))
+      onIndexProgress(0, allPdfFiles.length)
 
       // Determine which files to process
-      let filesToProcess = allFiles
+      let filesToProcess = allPdfFiles
       let existingFileMap = new Map<string, FileIndex>()
 
       if (!resetFromZero && existingIndex.length > 0) {
@@ -155,7 +143,7 @@ export default function FileIndexer({
         })
 
         // Filter out files that haven't changed
-        filesToProcess = allFiles.filter((file: any) => {
+        filesToProcess = allPdfFiles.filter((file: any) => {
           const existing = existingFileMap.get(file.path_display)
           if (!existing) return true // New file
           
@@ -165,10 +153,10 @@ export default function FileIndexer({
           return fileModified > existingModified
         })
 
-        setIndexingStatus(`📊 ${allFiles.length} bestanden gevonden. ${filesToProcess.length} nieuwe/gewijzigde bestanden te verwerken...`)
+        setIndexingStatus(`📊 ${allPdfFiles.length} PDF bestanden gevonden. ${filesToProcess.length} nieuwe/gewijzigde PDF's te verwerken...`)
       } else {
-        setIndexingStatus(`📊 ${allFiles.length} bestanden gevonden. ALLE bestanden worden grondig geïndexeerd...`)
-        setProcessingDetails(prev => [...prev, `📊 Totaal te verwerken: ${allFiles.length} bestanden`])
+        setIndexingStatus(`📊 ${allPdfFiles.length} PDF bestanden gevonden. ALLE PDF's worden grondig geïndexeerd...`)
+        setProcessingDetails(prev => [...prev, `📊 Totaal te verwerken: ${allPdfFiles.length} PDF bestanden`])
       }
 
       // KRITISCH: Bij volledige reset start met lege array
@@ -177,162 +165,64 @@ export default function FileIndexer({
 
       // If no new files to process (only for incremental updates)
       if (!resetFromZero && filesToProcess.length === 0) {
-        setIndexingStatus(`✅ Geen nieuwe bestanden gevonden. Index is up-to-date met ${existingIndex.length} bestanden.`)
+        setIndexingStatus(`✅ Geen nieuwe PDF bestanden gevonden. Index is up-to-date met ${existingIndex.length} bestanden.`)
         onIndexComplete(existingIndex)
         setIsIndexing(false)
         return
       }
 
-      // Process files in very small batches for maximum reliability
-      const batchSize = 1 // Process one file at a time for better error handling and progress tracking
-      for (let i = 0; i < filesToProcess.length; i += batchSize) {
+      // Process PDF files one by one for maximum reliability
+      for (let i = 0; i < filesToProcess.length; i++) {
         if (abortControllerRef.current?.signal.aborted) {
           throw new Error('Indexering geannuleerd')
         }
 
-        const batch = filesToProcess.slice(i, i + batchSize)
+        const file = filesToProcess[i]
         
-        for (const file of batch) {
-          try {
-            // Determine file type with expanded detection
-            const fileType = getFileType(file.name)
-            
-            // Skip very large files but with higher limit
-            if (file.size > 50 * 1024 * 1024) { // 50MB limit
-              setIndexingStats(prev => ({ ...prev, skippedFiles: prev.skippedFiles + 1 }))
-              setProcessingDetails(prev => [...prev, `⏭️ Overgeslagen (te groot): ${file.name} (${(file.size / 1024 / 1024).toFixed(1)}MB)`])
-              continue
-            }
+        try {
+          setProcessingDetails(prev => [...prev, `🔄 Verwerken: ${file.name} (${(file.size / 1024).toFixed(1)}KB)`])
 
-            // Skip certain file types that are definitely not useful
-            const skipExtensions = ['.exe', '.dll', '.zip', '.rar', '.7z', '.tar', '.gz', '.bin', '.iso', '.dmg', '.app', '.deb', '.rpm']
-            const fileName = file.name.toLowerCase()
-            if (skipExtensions.some(ext => fileName.endsWith(ext))) {
-              setIndexingStats(prev => ({ ...prev, skippedFiles: prev.skippedFiles + 1 }))
-              setProcessingDetails(prev => [...prev, `⏭️ Overgeslagen (binair): ${file.name}`])
-              continue
-            }
+          // Get PDF content with enhanced retry mechanism
+          let contentResponse
+          let retryCount = 0
+          const maxRetries = 3
 
-            setProcessingDetails(prev => [...prev, `🔄 Verwerken: ${file.name} (${fileType}, ${(file.size / 1024).toFixed(1)}KB)`])
-
-            // Get file content with enhanced retry mechanism
-            let contentResponse
-            let retryCount = 0
-            const maxRetries = 3
-
-            while (retryCount <= maxRetries) {
-              try {
-                contentResponse = await fetch('/api/dropbox/content', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ 
-                    accessToken, 
-                    filePath: file.path_lower,
-                    fileType 
-                  }),
-                  signal: abortControllerRef.current?.signal
-                })
-                break // Success, exit retry loop
-              } catch (fetchError) {
-                retryCount++
-                if (retryCount > maxRetries) {
-                  throw fetchError
-                }
-                setProcessingDetails(prev => [...prev, `🔄 Retry ${retryCount}/3: ${file.name}`])
-                await new Promise(resolve => setTimeout(resolve, 1000 * retryCount)) // Exponential backoff
+          while (retryCount <= maxRetries) {
+            try {
+              contentResponse = await fetch('/api/dropbox/content', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ 
+                  accessToken, 
+                  filePath: file.path_lower,
+                  fileType: 'pdf'
+                }),
+                signal: abortControllerRef.current?.signal
+              })
+              break // Success, exit retry loop
+            } catch (fetchError) {
+              retryCount++
+              if (retryCount > maxRetries) {
+                throw fetchError
               }
+              setProcessingDetails(prev => [...prev, `🔄 Retry ${retryCount}/3: ${file.name}`])
+              await new Promise(resolve => setTimeout(resolve, 1000 * retryCount)) // Exponential backoff
             }
+          }
 
-            if (!contentResponse || !contentResponse.ok) {
-              setIndexingStats(prev => ({ ...prev, errors: prev.errors + 1 }))
-              setProcessingDetails(prev => [...prev, `❌ Fout: ${file.name} (HTTP ${contentResponse?.status})`])
-              
-              // Create error entry to maintain file record
-              const errorFileIndex = {
-                id: file.id,
-                name: file.name,
-                path: file.path_display,
-                content: `[Fout bij verwerken: ${file.name}]\nHTTP Status: ${contentResponse?.status}\nBestand kon niet worden gedownload maar is geregistreerd voor bestandsnaam-zoekopdrachten.`,
-                size: file.size,
-                modified: file.server_modified,
-                type: fileType
-              }
-              
-              // Add error entry to index
-              if (resetFromZero) {
-                fileIndex.push(errorFileIndex)
-              } else {
-                const existingIndex = fileIndex.findIndex(f => f.path === file.path_display)
-                if (existingIndex !== -1) {
-                  fileIndex[existingIndex] = errorFileIndex
-                } else {
-                  fileIndex.push(errorFileIndex)
-                }
-              }
-              continue
-            }
-
-            const contentData = await contentResponse.json()
-            
-            if (contentData.success && contentData.content) {
-              // Update stats based on file type and extraction success
-              const isSuccessful = contentData.extractionSuccess !== false
-              
-              setIndexingStats(prev => ({
-                ...prev,
-                textFiles: prev.textFiles + 1,
-                pdfFiles: fileType === 'pdf' ? prev.pdfFiles + 1 : prev.pdfFiles,
-                docxFiles: fileType === 'docx' ? prev.docxFiles + 1 : prev.docxFiles,
-                imageFiles: fileType === 'image' ? prev.imageFiles + 1 : prev.imageFiles,
-                successfulExtractions: isSuccessful ? prev.successfulExtractions + 1 : prev.successfulExtractions,
-                partialExtractions: !isSuccessful ? prev.partialExtractions + 1 : prev.partialExtractions
-              }))
-              
-              const statusIcon = isSuccessful ? '✅' : '⚠️'
-              const extractionInfo = contentData.extractionMethod ? ` (${contentData.extractionMethod})` : ''
-              setProcessingDetails(prev => [...prev, `${statusIcon} Geïndexeerd: ${file.name} - ${contentData.content.length} chars${extractionInfo}`])
-              
-              const newFileIndex = {
-                id: file.id,
-                name: file.name,
-                path: file.path_display,
-                content: contentData.content,
-                size: file.size,
-                modified: file.server_modified,
-                type: fileType
-              }
-
-              // KRITISCH: Bij volledige reset GEEN duplicaat controle
-              if (resetFromZero) {
-                fileIndex.push(newFileIndex)
-              } else {
-                // Bij incrementele update: vervang bestaand bestand
-                const existingIndex = fileIndex.findIndex(f => f.path === file.path_display)
-                if (existingIndex !== -1) {
-                  fileIndex[existingIndex] = newFileIndex
-                } else {
-                  fileIndex.push(newFileIndex)
-                }
-              }
-            } else {
-              setIndexingStats(prev => ({ ...prev, skippedFiles: prev.skippedFiles + 1 }))
-              setProcessingDetails(prev => [...prev, `⏭️ Geen inhoud: ${file.name}`])
-            }
-            
-          } catch (error) {
-            console.error(`Error processing file ${file.name}:`, error)
+          if (!contentResponse || !contentResponse.ok) {
             setIndexingStats(prev => ({ ...prev, errors: prev.errors + 1 }))
-            setProcessingDetails(prev => [...prev, `❌ Fout: ${file.name} - ${error instanceof Error ? error.message : 'Onbekende fout'}`])
+            setProcessingDetails(prev => [...prev, `❌ Download fout: ${file.name} (HTTP ${contentResponse?.status})`])
             
             // Create error entry to maintain file record
             const errorFileIndex = {
-              id: file.id || `error_${Date.now()}`,
+              id: file.id,
               name: file.name,
               path: file.path_display,
-              content: `[Verwerkingsfout: ${file.name}]\nFout: ${error instanceof Error ? error.message : 'Onbekende fout'}\nBestand is geregistreerd voor bestandsnaam-zoekopdrachten.`,
+              content: `[PDF Download Fout: ${file.name}]\nHTTP Status: ${contentResponse?.status}\nPDF kon niet worden gedownload maar is geregistreerd voor bestandsnaam-zoekopdrachten.`,
               size: file.size,
               modified: file.server_modified,
-              type: getFileType(file.name)
+              type: 'pdf' as const
             }
             
             // Add error entry to index
@@ -346,28 +236,100 @@ export default function FileIndexer({
                 fileIndex.push(errorFileIndex)
               }
             }
+            continue
+          }
+
+          const contentData = await contentResponse.json()
+          
+          if (contentData.success && contentData.content) {
+            // Update stats based on extraction success
+            const isSuccessful = contentData.extractionSuccess !== false
+            
+            setIndexingStats(prev => ({
+              ...prev,
+              successfulPdfs: isSuccessful ? prev.successfulPdfs + 1 : prev.successfulPdfs,
+              failedPdfs: !isSuccessful ? prev.failedPdfs + 1 : prev.failedPdfs
+            }))
+            
+            const statusIcon = isSuccessful ? '✅' : '⚠️'
+            const extractionInfo = contentData.extractionMethod ? ` (${contentData.extractionMethod})` : ''
+            setProcessingDetails(prev => [...prev, `${statusIcon} PDF geïndexeerd: ${file.name} - ${contentData.content.length} chars${extractionInfo}`])
+            
+            const newFileIndex = {
+              id: file.id,
+              name: file.name,
+              path: file.path_display,
+              content: contentData.content,
+              size: file.size,
+              modified: file.server_modified,
+              type: 'pdf' as const
+            }
+
+            // KRITISCH: Bij volledige reset GEEN duplicaat controle
+            if (resetFromZero) {
+              fileIndex.push(newFileIndex)
+            } else {
+              // Bij incrementele update: vervang bestaand bestand
+              const existingIndex = fileIndex.findIndex(f => f.path === file.path_display)
+              if (existingIndex !== -1) {
+                fileIndex[existingIndex] = newFileIndex
+              } else {
+                fileIndex.push(newFileIndex)
+              }
+            }
+          } else {
+            setIndexingStats(prev => ({ ...prev, failedPdfs: prev.failedPdfs + 1 }))
+            setProcessingDetails(prev => [...prev, `⏭️ Geen inhoud: ${file.name}`])
+          }
+          
+        } catch (error) {
+          console.error(`Error processing PDF ${file.name}:`, error)
+          setIndexingStats(prev => ({ ...prev, errors: prev.errors + 1 }))
+          setProcessingDetails(prev => [...prev, `❌ Fout: ${file.name} - ${error instanceof Error ? error.message : 'Onbekende fout'}`])
+          
+          // Create error entry to maintain file record
+          const errorFileIndex = {
+            id: file.id || `error_${Date.now()}`,
+            name: file.name,
+            path: file.path_display,
+            content: `[PDF Verwerkingsfout: ${file.name}]\nFout: ${error instanceof Error ? error.message : 'Onbekende fout'}\nPDF is geregistreerd voor bestandsnaam-zoekopdrachten.`,
+            size: file.size,
+            modified: file.server_modified,
+            type: 'pdf' as const
+          }
+          
+          // Add error entry to index
+          if (resetFromZero) {
+            fileIndex.push(errorFileIndex)
+          } else {
+            const existingIndex = fileIndex.findIndex(f => f.path === file.path_display)
+            if (existingIndex !== -1) {
+              fileIndex[existingIndex] = errorFileIndex
+            } else {
+              fileIndex.push(errorFileIndex)
+            }
           }
         }
 
-        processed += batch.length
+        processed++
         setIndexingStats(prev => ({ ...prev, processedFiles: processed }))
         onIndexProgress(processed, filesToProcess.length)
         
         const totalIndexed = fileIndex.length
         
         if (resetFromZero) {
-          setIndexingStatus(`🔄 VOLLEDIGE HERINDEXERING: ${processed}/${filesToProcess.length} bestanden verwerkt (${totalIndexed} totaal geïndexeerd)`)
+          setIndexingStatus(`🔄 VOLLEDIGE PDF HERINDEXERING: ${processed}/${filesToProcess.length} PDF's verwerkt (${totalIndexed} totaal geïndexeerd)`)
         } else {
-          setIndexingStatus(`🔄 Verwerkt: ${processed}/${filesToProcess.length} nieuwe bestanden (${totalIndexed} totaal geïndexeerd)`)
+          setIndexingStatus(`🔄 Verwerkt: ${processed}/${filesToProcess.length} nieuwe PDF's (${totalIndexed} totaal geïndexeerd)`)
         }
 
-        // Shorter delay between files for faster processing
-        await new Promise(resolve => setTimeout(resolve, 200))
+        // Short delay between files
+        await new Promise(resolve => setTimeout(resolve, 300))
       }
 
       const successMessage = resetFromZero 
-        ? `🎉 VOLLEDIGE HERINDEXERING VOLTOOID! ${fileIndex.length} bestanden grondig geïndexeerd van ${allFiles.length} totaal. Alle oude data vervangen.`
-        : `🎉 Incrementele update voltooid! ${processed} nieuwe/gewijzigde bestanden verwerkt. Totaal: ${fileIndex.length} bestanden.`
+        ? `🎉 VOLLEDIGE PDF HERINDEXERING VOLTOOID! ${fileIndex.length} PDF bestanden grondig geïndexeerd van ${allPdfFiles.length} totaal. Alle oude data vervangen.`
+        : `🎉 Incrementele PDF update voltooid! ${processed} nieuwe/gewijzigde PDF's verwerkt. Totaal: ${fileIndex.length} PDF bestanden.`
       
       setIndexingStatus(successMessage)
       
@@ -375,13 +337,12 @@ export default function FileIndexer({
       setProcessingDetails(prev => [
         ...prev,
         '',
-        resetFromZero ? '📊 VOLLEDIGE HERINDEXERING SAMENVATTING:' : '📊 INCREMENTELE UPDATE SAMENVATTING:',
-        `✅ Succesvol: ${indexingStats.successfulExtractions} bestanden`,
-        `⚠️ Gedeeltelijk: ${indexingStats.partialExtractions} bestanden`,
-        `❌ Fouten: ${indexingStats.errors} bestanden`,
-        `⏭️ Overgeslagen: ${indexingStats.skippedFiles} bestanden`,
-        `📁 Totaal geïndexeerd: ${fileIndex.length} bestanden`,
-        resetFromZero ? '🗑️ Alle oude data vervangen door nieuwe index' : '🔄 Bestaande data bijgewerkt'
+        resetFromZero ? '📊 VOLLEDIGE PDF HERINDEXERING SAMENVATTING:' : '📊 INCREMENTELE PDF UPDATE SAMENVATTING:',
+        `✅ Succesvol: ${indexingStats.successfulPdfs} PDF's`,
+        `⚠️ Gedeeltelijk: ${indexingStats.failedPdfs} PDF's`,
+        `❌ Fouten: ${indexingStats.errors} PDF's`,
+        `📁 Totaal geïndexeerd: ${fileIndex.length} PDF bestanden`,
+        resetFromZero ? '🗑️ Alle oude data vervangen door nieuwe PDF index' : '🔄 Bestaande PDF data bijgewerkt'
       ])
       
       console.log(successMessage)
@@ -390,12 +351,12 @@ export default function FileIndexer({
       onIndexComplete(fileIndex)
 
     } catch (error: any) {
-      console.error('Indexing error:', error)
+      console.error('PDF Indexing error:', error)
       if (error.name === 'AbortError' || error.message.includes('geannuleerd')) {
-        setIndexingError('Indexering geannuleerd door gebruiker')
+        setIndexingError('PDF indexering geannuleerd door gebruiker')
         setIndexingStatus('Geannuleerd')
       } else {
-        setIndexingError(error.message || 'Onbekende fout bij indexeren')
+        setIndexingError(error.message || 'Onbekende fout bij PDF indexeren')
         setIndexingStatus('Fout opgetreden')
       }
     } finally {
@@ -410,43 +371,13 @@ export default function FileIndexer({
     }
   }
 
-  const getFileType = (filename: string): 'text' | 'pdf' | 'docx' | 'image' | 'other' => {
-    const ext = filename.toLowerCase().split('.').pop() || ''
-    
-    // Expanded text files list for comprehensive coverage
-    if ([
-      // Programming and markup
-      'txt', 'md', 'csv', 'json', 'js', 'ts', 'jsx', 'tsx', 'html', 'htm', 'css', 'scss', 'sass', 'less',
-      'py', 'java', 'cpp', 'c', 'h', 'hpp', 'php', 'rb', 'go', 'rs', 'swift', 'kt', 'scala', 
-      'sh', 'bat', 'ps1', 'xml', 'yaml', 'yml', 'ini', 'cfg', 'conf', 'log', 'sql',
-      // Scientific and academic
-      'r', 'matlab', 'm', 'pl', 'pm', 'tcl', 'vb', 'vbs', 'asm', 'f', 'f90', 'f95',
-      'tex', 'bib', 'rtf', 'org', 'rst', 'wiki', 'adoc', 'asciidoc',
-      // Data and config
-      'properties', 'env', 'gitignore', 'dockerfile', 'makefile', 'cmake', 'gradle',
-      'toml', 'lock', 'manifest', 'plist', 'reg', 'inf',
-      // Documentation
-      'readme', 'changelog', 'license', 'authors', 'contributors', 'todo',
-      // Other text formats
-      'srt', 'vtt', 'sub', 'ass', 'ssa', 'lrc', 'ttml'
-    ].includes(ext)) {
-      return 'text'
-    }
-    
-    if (ext === 'pdf') return 'pdf'
-    if (['docx', 'doc', 'odt', 'pages'].includes(ext)) return 'docx'
-    if (['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg', 'tiff', 'tif', 'ico', 'heic', 'heif'].includes(ext)) return 'image'
-    
-    return 'other'
-  }
-
   return (
     <div className="bg-white rounded-2xl shadow-xl p-8">
       <h2 className="text-2xl font-bold text-blue-800 mb-6 flex items-center">
         <span className="w-8 h-8 bg-blue-100 rounded-lg flex items-center justify-center mr-3">
-          📁
+          📄
         </span>
-        Grondige Bestanden Indexering
+        PDF Bestanden Indexering
       </h2>
 
       <div className="space-y-6">
@@ -454,12 +385,12 @@ export default function FileIndexer({
         <div className="flex items-center justify-between">
           <div>
             <h3 className="text-lg font-semibold text-gray-800">
-              {existingIndex.length > 0 ? 'Bestaande Index' : 'Eerste Indexering'}
+              {existingIndex.length > 0 ? 'Bestaande PDF Index' : 'Eerste PDF Indexering'}
             </h3>
             <p className="text-sm text-gray-600">
               {existingIndex.length > 0 
-                ? `Huidige index: ${existingIndex.length} bestanden` 
-                : 'Nog geen bestanden geïndexeerd'
+                ? `Huidige index: ${existingIndex.length} PDF bestanden` 
+                : 'Nog geen PDF bestanden geïndexeerd'
               }
             </p>
             {existingIndex.length > 0 && (
@@ -479,24 +410,24 @@ export default function FileIndexer({
                 <button
                   onClick={() => startIndexing(false)}
                   className="px-6 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors flex items-center"
-                  title={existingIndex.length > 0 ? "Zoek alleen naar nieuwe en gewijzigde bestanden" : "Start eerste indexering"}
+                  title={existingIndex.length > 0 ? "Zoek alleen naar nieuwe en gewijzigde PDF bestanden" : "Start eerste PDF indexering"}
                 >
                   <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
                   </svg>
-                  {existingIndex.length > 0 ? 'Update Index' : 'Start Grondige Indexering'}
+                  {existingIndex.length > 0 ? 'Update PDF Index' : 'Start PDF Indexering'}
                 </button>
 
                 {/* Reset Button */}
                 <button
                   onClick={handleResetClick}
                   className="px-6 py-3 bg-orange-600 text-white rounded-lg hover:bg-orange-700 transition-colors flex items-center"
-                  title="Reset en herindexeer alle bestanden grondig"
+                  title="Reset en herindexeer alle PDF bestanden grondig"
                 >
                   <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
                   </svg>
-                  Volledige Reset
+                  Volledige PDF Reset
                 </button>
               </>
             ) : (
@@ -508,7 +439,7 @@ export default function FileIndexer({
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 10a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z" />
                 </svg>
-                Stop Indexering
+                Stop PDF Indexering
               </button>
             )}
           </div>
@@ -522,11 +453,11 @@ export default function FileIndexer({
                 <span className="w-8 h-8 bg-orange-100 rounded-lg flex items-center justify-center mr-3">
                   🔄
                 </span>
-                Indexering Opties
+                PDF Indexering Opties
               </h3>
               
               <p className="text-gray-600 mb-6">
-                Je hebt al {existingIndex.length} bestanden geïndexeerd. Hoe wil je doorgaan?
+                Je hebt al {existingIndex.length} PDF bestanden geïndexeerd. Hoe wil je doorgaan?
               </p>
 
               <div className="space-y-4">
@@ -542,9 +473,8 @@ export default function FileIndexer({
                     <span className="font-semibold text-red-800">Volledig Opnieuw Beginnen</span>
                   </div>
                   <p className="text-sm text-red-700 ml-9">
-                    <strong>WIS ALLE BESTAANDE DATA</strong> en indexeer alle bestanden grondig opnieuw. 
-                    Dit duurt langer maar zorgt voor maximale dekking en kwaliteit. Vroegere gewiste bestanden 
-                    worden definitief uit het geheugen verwijderd.
+                    <strong>WIS ALLE BESTAANDE PDF DATA</strong> en indexeer alle PDF bestanden grondig opnieuw. 
+                    Dit duurt langer maar zorgt voor maximale PDF tekstextractie kwaliteit.
                   </p>
                 </button>
 
@@ -557,10 +487,10 @@ export default function FileIndexer({
                     <span className="w-6 h-6 bg-green-600 rounded-full flex items-center justify-center mr-3">
                       <span className="text-white text-sm">⚡</span>
                     </span>
-                    <span className="font-semibold text-green-800">Slimme Update (Aanbevolen)</span>
+                    <span className="font-semibold text-green-800">Slimme PDF Update (Aanbevolen)</span>
                   </div>
                   <p className="text-sm text-green-700 ml-9">
-                    Behoud bestaande data en voeg alleen nieuwe of gewijzigde bestanden toe. 
+                    Behoud bestaande PDF data en voeg alleen nieuwe of gewijzigde PDF bestanden toe. 
                     Sneller en efficiënter voor regelmatige updates.
                   </p>
                 </button>
@@ -584,7 +514,7 @@ export default function FileIndexer({
           <div className="space-y-4">
             <div className="bg-gray-200 rounded-full h-4 overflow-hidden">
               <div 
-                className="bg-gradient-to-r from-blue-500 to-green-500 h-full transition-all duration-300 ease-out"
+                className="bg-gradient-to-r from-red-500 to-orange-500 h-full transition-all duration-300 ease-out"
                 style={{ 
                   width: indexingProgress.total > 0 
                     ? `${(indexingProgress.current / indexingProgress.total) * 100}%` 
@@ -607,40 +537,32 @@ export default function FileIndexer({
           </div>
         )}
 
-        {/* Enhanced Indexing Stats */}
+        {/* Enhanced PDF Indexing Stats */}
         {isIndexing && indexingStats.totalFiles > 0 && (
-          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-3">
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
             <div className="bg-blue-50 p-3 rounded-lg text-center">
               <div className="text-xl font-bold text-blue-600">{indexingStats.totalFiles}</div>
-              <div className="text-xs text-blue-700">Totaal</div>
+              <div className="text-xs text-blue-700">Totaal PDF's</div>
             </div>
             <div className="bg-green-50 p-3 rounded-lg text-center">
               <div className="text-xl font-bold text-green-600">{indexingStats.processedFiles}</div>
               <div className="text-xs text-green-700">Verwerkt</div>
             </div>
             <div className="bg-emerald-50 p-3 rounded-lg text-center">
-              <div className="text-xl font-bold text-emerald-600">{indexingStats.successfulExtractions}</div>
+              <div className="text-xl font-bold text-emerald-600">{indexingStats.successfulPdfs}</div>
               <div className="text-xs text-emerald-700">Succesvol</div>
             </div>
             <div className="bg-amber-50 p-3 rounded-lg text-center">
-              <div className="text-xl font-bold text-amber-600">{indexingStats.partialExtractions}</div>
+              <div className="text-xl font-bold text-amber-600">{indexingStats.failedPdfs}</div>
               <div className="text-xs text-amber-700">Gedeeltelijk</div>
             </div>
             <div className="bg-red-50 p-3 rounded-lg text-center">
-              <div className="text-xl font-bold text-red-600">{indexingStats.pdfFiles}</div>
-              <div className="text-xs text-red-700">PDF's</div>
-            </div>
-            <div className="bg-indigo-50 p-3 rounded-lg text-center">
-              <div className="text-xl font-bold text-indigo-600">{indexingStats.docxFiles}</div>
-              <div className="text-xs text-indigo-700">Word</div>
-            </div>
-            <div className="bg-purple-50 p-3 rounded-lg text-center">
-              <div className="text-xl font-bold text-purple-600">{indexingStats.imageFiles}</div>
-              <div className="text-xs text-purple-700">Afbeeldingen</div>
+              <div className="text-xl font-bold text-red-600">{indexingStats.errors}</div>
+              <div className="text-xs text-red-700">Fouten</div>
             </div>
             <div className="bg-gray-50 p-3 rounded-lg text-center">
-              <div className="text-xl font-bold text-gray-600">{indexingStats.errors}</div>
-              <div className="text-xs text-gray-700">Fouten</div>
+              <div className="text-xl font-bold text-gray-600">{indexingStats.skippedFiles}</div>
+              <div className="text-xs text-gray-700">Overgeslagen</div>
             </div>
           </div>
         )}
@@ -648,7 +570,7 @@ export default function FileIndexer({
         {/* Real-time Processing Details */}
         {isIndexing && processingDetails.length > 0 && (
           <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
-            <h4 className="text-sm font-medium text-gray-800 mb-3">🔄 Live Verwerkingsdetails:</h4>
+            <h4 className="text-sm font-medium text-gray-800 mb-3">🔄 Live PDF Verwerkingsdetails:</h4>
             <div className="max-h-40 overflow-y-auto text-xs text-gray-600 space-y-1 font-mono">
               {processingDetails.slice(-20).map((detail, index) => (
                 <div key={index} className="whitespace-nowrap">
@@ -671,50 +593,50 @@ export default function FileIndexer({
           </div>
         )}
 
-        {/* Enhanced Info with Comprehensive Coverage Details */}
-        <div className="bg-gradient-to-r from-blue-50 to-green-50 border border-blue-200 rounded-lg p-6">
-          <h4 className="text-lg font-bold text-blue-800 mb-4">🚀 Verbeterde PDF Parsing - Maximale Tekstextractie</h4>
+        {/* Enhanced Info with PDF Focus */}
+        <div className="bg-gradient-to-r from-red-50 to-orange-50 border border-red-200 rounded-lg p-6">
+          <h4 className="text-lg font-bold text-red-800 mb-4">📄 FOCUS: Alleen PDF Bestanden - Maximale Tekstextractie</h4>
           
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
             <div className="bg-white border border-green-200 rounded-lg p-4">
               <h5 className="text-sm font-semibold text-green-800 mb-3">✅ PDF Extractie Strategieën:</h5>
               <ul className="text-xs text-green-700 space-y-1">
-                <li>• <strong>Strategie 1:</strong> Enhanced pdf-parse met verbeterde opties</li>
-                <li>• <strong>Strategie 2:</strong> Regex-gebaseerde tekstextractie uit PDF streams</li>
-                <li>• <strong>Strategie 3:</strong> Brute force zoeken naar leesbare tekst</li>
+                <li>• <strong>Strategie 1:</strong> Enhanced pdf-parse met optimale instellingen</li>
+                <li>• <strong>Strategie 2:</strong> Direct stream extractie uit PDF structuur</li>
+                <li>• <strong>Strategie 3:</strong> Character-level detectie voor complexe PDF's</li>
                 <li>• <strong>Tekst cleaning:</strong> Verwijdering van garbage karakters</li>
+                <li>• <strong>Encoding fix:</strong> UTF-8, Latin1, ASCII fallbacks</li>
                 <li>• <strong>Kwaliteitscontrole:</strong> Filtering van onleesbare content</li>
-                <li>• <strong>Metadata extractie:</strong> Titel, auteur, onderwerp, pagina's</li>
               </ul>
             </div>
             
             <div className="bg-white border border-orange-200 rounded-lg p-4">
-              <h5 className="text-sm font-semibold text-orange-800 mb-3">🛡️ Robuuste Foutafhandeling:</h5>
+              <h5 className="text-sm font-semibold text-orange-800 mb-3">🛡️ PDF Specifieke Verbeteringen:</h5>
               <ul className="text-xs text-orange-700 space-y-1">
-                <li>• <strong>PDF fouten:</strong> Automatische fallback naar alternatieve extractie</li>
-                <li>• <strong>Serverless fix:</strong> PDF.js worker uitgeschakeld</li>
-                <li>• <strong>Encoding problemen:</strong> UTF-8 en Latin1 fallback</li>
-                <li>• <strong>Garbage filtering:</strong> Automatische detectie van onleesbare tekst</li>
-                <li>• <strong>Beschadigde bestanden:</strong> Graceful degradation</li>
-                <li>• <strong>Memory management:</strong> Intelligente truncatie</li>
+                <li>• <strong>Alleen PDF's:</strong> Gefocuste verwerking voor betere resultaten</li>
+                <li>• <strong>Multiple encodings:</strong> Automatische detectie van beste encoding</li>
+                <li>• <strong>Text stream parsing:</strong> Directe extractie uit PDF streams</li>
+                <li>• <strong>Garbage filtering:</strong> Intelligente detectie van leesbare tekst</li>
+                <li>• <strong>Metadata extractie:</strong> Titel, auteur, onderwerp</li>
+                <li>• <strong>Error handling:</strong> Graceful degradation voor problematische PDF's</li>
               </ul>
             </div>
           </div>
 
           <div className="bg-white border border-blue-200 rounded-lg p-4">
-            <h5 className="text-sm font-semibold text-blue-800 mb-3">🔧 Technische Verbeteringen:</h5>
+            <h5 className="text-sm font-semibold text-blue-800 mb-3">🔧 Technische PDF Verbeteringen:</h5>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <ul className="text-xs text-blue-700 space-y-1">
-                <li>• <strong>Volledige reset fix:</strong> Correcte localStorage clearing</li>
-                <li>• <strong>Sequentiële verwerking:</strong> Eén bestand per keer voor stabiliteit</li>
-                <li>• <strong>Enhanced logging:</strong> Gedetailleerde voortgangsinformatie</li>
-                <li>• <strong>Error continuity:</strong> Fouten stoppen niet de hele indexering</li>
+                <li>• <strong>PDF validatie:</strong> Controle op geldig PDF formaat</li>
+                <li>• <strong>Buffer optimalisatie:</strong> Efficiënte memory handling</li>
+                <li>• <strong>Retry mechanisme:</strong> 3 pogingen met exponential backoff</li>
+                <li>• <strong>Live monitoring:</strong> Real-time PDF voortgang</li>
               </ul>
               <ul className="text-xs text-blue-700 space-y-1">
-                <li>• <strong>Retry mechanisme:</strong> 3 pogingen met exponential backoff</li>
-                <li>• <strong>Live monitoring:</strong> Real-time voortgang en details</li>
-                <li>• <strong>Memory optimization:</strong> Efficiënte buffer handling</li>
-                <li>• <strong>Quality validation:</strong> Automatische content kwaliteitscontrole</li>
+                <li>• <strong>Content validation:</strong> Kwaliteitscontrole van geëxtraheerde tekst</li>
+                <li>• <strong>Intelligent truncation:</strong> Behoud van zinvolle content</li>
+                <li>• <strong>Error continuity:</strong> PDF fouten stoppen niet de hele indexering</li>
+                <li>• <strong>Fallback content:</strong> Informatieve foutmeldingen</li>
               </ul>
             </div>
           </div>
@@ -722,17 +644,18 @@ export default function FileIndexer({
           <div className="mt-4 p-3 bg-green-50 rounded border border-green-200">
             <p className="text-xs text-green-800 font-medium">✅ PROBLEEM OPGELOST:</p>
             <p className="text-xs text-green-700 mt-1">
-              De PDF parsing is volledig herschreven met meerdere extractie strategieën. 
-              Garbage tekst wordt automatisch gefilterd en alleen leesbare content wordt geïndexeerd. 
-              Volledige herindexering werkt nu correct zonder errors.
+              De app focust nu ALLEEN op PDF bestanden en gebruikt geavanceerde tekstextractie strategieën. 
+              Garbage tekst wordt automatisch gefilterd en alleen leesbare PDF content wordt geïndexeerd. 
+              Zoeken naar termen zoals "rubrieken" zal nu correct werken in PDF documenten.
             </p>
           </div>
 
           <div className="mt-4 p-3 bg-blue-50 rounded border border-blue-200">
-            <p className="text-xs text-blue-800 font-medium">🔍 ZOEKEN VERBETERD:</p>
+            <p className="text-xs text-blue-800 font-medium">🔍 PDF ZOEKEN VERBETERD:</p>
             <p className="text-xs text-blue-700 mt-1">
-              Met de verbeterde PDF parsing zal zoeken naar termen zoals "rubrieken" nu correct werken 
-              omdat de werkelijke tekstinhoud van PDF's wordt geëxtraheerd in plaats van technische metadata.
+              Met de verbeterde PDF parsing en focus op alleen PDF bestanden zal zoeken naar educatieve termen 
+              zoals "rubrieken", "evaluatie", "beoordeling" nu correct werken omdat de werkelijke tekstinhoud 
+              van PDF's wordt geëxtraheerd in plaats van technische metadata.
             </p>
           </div>
         </div>

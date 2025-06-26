@@ -35,9 +35,12 @@ export async function POST(request: NextRequest) {
           })
         }
 
-        // Filter for files only (not folders)
-        const files = response.result.entries.filter((entry: any) => entry['.tag'] === 'file')
-        allFiles.push(...files)
+        // KRITIEKE WIJZIGING: Filter ALLEEN voor PDF bestanden
+        const pdfFiles = response.result.entries.filter((entry: any) => {
+          return entry['.tag'] === 'file' && entry.name.toLowerCase().endsWith('.pdf')
+        })
+        
+        allFiles.push(...pdfFiles)
 
         // If there are more files, continue with cursor
         if (response.result.has_more) {
@@ -51,6 +54,8 @@ export async function POST(request: NextRequest) {
     }
 
     await getAllFiles()
+
+    console.log(`📁 Found ${allFiles.length} PDF files in Dropbox`)
 
     return NextResponse.json({
       success: true,

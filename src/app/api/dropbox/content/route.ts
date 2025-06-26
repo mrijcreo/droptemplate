@@ -9,13 +9,7 @@ let pdfParseInitialized = false
 async function initializePdfParse() {
   if (!pdfParseInitialized) {
     try {
-      // Import pdfjs-dist and configure for serverless environment
-      const pdfjs = await import('pdfjs-dist/legacy/build/pdf.js')
-      
-      // Disable worker completely to prevent file system access
-      pdfjs.GlobalWorkerOptions.workerSrc = null
-      
-      // Import pdf-parse after configuring pdfjs
+      // Import pdf-parse directly without pdfjs configuration
       pdfParse = (await import('pdf-parse')).default
       pdfParseInitialized = true
       console.log('✅ PDF-parse initialized successfully')
@@ -28,40 +22,44 @@ async function initializePdfParse() {
   return pdfParse
 }
 
-// Advanced text cleaning function
-function cleanExtractedText(text: string): string {
+// Advanced text cleaning function specifically for PDF content
+function cleanPdfText(text: string): string {
   if (!text) return ''
   
   return text
-    // Remove null bytes and control characters
-    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
-    // Normalize Unicode
-    .normalize('NFKC')
-    // Fix common PDF extraction issues
+    // Remove null bytes and problematic control characters
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/g, '')
+    // Fix common PDF encoding issues
+    .replace(/\uFFFD/g, '') // Remove replacement characters
+    .replace(/\u00A0/g, ' ') // Non-breaking space to regular space
+    // Fix common PDF text extraction artifacts
     .replace(/([a-z])([A-Z])/g, '$1 $2') // Add space between camelCase
     .replace(/([.!?])([A-Z])/g, '$1 $2') // Add space after sentence endings
     .replace(/([a-zA-Z])(\d)/g, '$1 $2') // Add space between letters and numbers
     .replace(/(\d)([a-zA-Z])/g, '$1 $2') // Add space between numbers and letters
-    // Remove excessive whitespace
+    // Clean up whitespace
     .replace(/\s+/g, ' ')
-    .replace(/\n\s*\n/g, '\n\n')
+    .replace(/\n\s*\n\s*\n/g, '\n\n')
     .trim()
 }
 
-// Function to detect if text is mostly garbage
-function isGarbageText(text: string): boolean {
-  if (!text || text.length < 10) return true
+// Function to detect if text contains meaningful content
+function hasReadableContent(text: string): boolean {
+  if (!text || text.length < 20) return false
   
-  // Count readable characters
+  // Count Dutch/English words and readable patterns
+  const words = text.match(/\b[a-zA-ZàáâãäåæçèéêëìíîïðñòóôõöøùúûüýþÿĀāĂăĄąĆćĈĉĊċČčĎďĐđĒēĔĕĖėĘęĚěĜĝĞğĠġĢģĤĥĦħĨĩĪīĬĭĮįİıĲĳĴĵĶķĸĹĺĻļĽľĿŀŁłŃńŅņŇňŉŊŋŌōŎŏŐőŒœŔŕŖŗŘřŚśŜŝŞşŠšŢţŤťŦŧŨũŪūŬŭŮůŰűŲųŴŵŶŷŸŹźŻżŽž]{2,}\b/g) || []
   const readableChars = text.match(/[a-zA-Z0-9\s.,!?;:()\-]/g) || []
+  
+  // Check if we have enough words and readable characters
+  const wordRatio = words.length / (text.split(/\s+/).length || 1)
   const readableRatio = readableChars.length / text.length
   
-  // If less than 60% readable characters, consider it garbage
-  return readableRatio < 0.6
+  return words.length >= 5 && wordRatio > 0.3 && readableRatio > 0.7
 }
 
-// Enhanced PDF text extraction with multiple strategies
-async function extractPdfText(pdfBuffer: Buffer, filePath: string): Promise<{ content: string, method: string, success: boolean }> {
+// Enhanced PDF text extraction with focus on readable content
+async function extractPdfTextAdvanced(pdfBuffer: Buffer, filePath: string): Promise<{ content: string, method: string, success: boolean }> {
   let content = ''
   let method = 'unknown'
   let success = false
@@ -72,20 +70,23 @@ async function extractPdfText(pdfBuffer: Buffer, filePath: string): Promise<{ co
   }
 
   // Check if it's actually a PDF file
-  const pdfHeader = pdfBuffer.slice(0, 4).toString()
-  if (pdfHeader !== '%PDF') {
+  const pdfHeader = pdfBuffer.slice(0, 5).toString('ascii')
+  if (!pdfHeader.startsWith('%PDF')) {
     throw new Error('Bestand is geen geldig PDF formaat')
   }
 
-  // Strategy 1: Enhanced pdf-parse with better options
+  console.log(`🔍 Processing PDF: ${filePath} (${(pdfBuffer.length / 1024).toFixed(1)} KB)`)
+
+  // Strategy 1: Enhanced pdf-parse with optimal settings
   try {
     const pdfParseLib = await initializePdfParse()
     
     if (pdfParseLib) {
-      console.log(`🔄 Trying pdf-parse for ${filePath}`)
+      console.log(`📖 Trying enhanced pdf-parse for ${filePath}`)
       
+      // Try with different options for better text extraction
       const options = {
-        max: 0, // No page limit
+        max: 0, // Process all pages
         version: 'default',
         normalizeWhitespace: true,
         disableCombineTextItems: false
@@ -94,163 +95,180 @@ async function extractPdfText(pdfBuffer: Buffer, filePath: string): Promise<{ co
       const pdfData = await pdfParseLib(pdfBuffer, options)
       let extractedText = pdfData.text || ''
       
-      if (extractedText && extractedText.trim().length > 20) {
-        extractedText = cleanExtractedText(extractedText)
+      if (extractedText && extractedText.trim().length > 50) {
+        extractedText = cleanPdfText(extractedText)
         
-        // Filter out garbage lines
-        const lines = extractedText.split('\n')
-        const cleanLines = lines.filter(line => {
-          const cleanLine = line.trim()
-          return cleanLine.length >= 3 && !isGarbageText(cleanLine)
-        })
-        
-        content = cleanLines.join('\n')
-        
-        // Add metadata if available
-        if (pdfData.info) {
+        if (hasReadableContent(extractedText)) {
+          content = extractedText
+          
+          // Add useful metadata
           const metadata = []
-          if (pdfData.info.Title && pdfData.info.Title.trim() && !isGarbageText(pdfData.info.Title)) {
-            metadata.push(`Titel: ${cleanExtractedText(pdfData.info.Title)}`)
-          }
-          if (pdfData.info.Author && pdfData.info.Author.trim() && !isGarbageText(pdfData.info.Author)) {
-            metadata.push(`Auteur: ${cleanExtractedText(pdfData.info.Author)}`)
-          }
-          if (pdfData.info.Subject && pdfData.info.Subject.trim() && !isGarbageText(pdfData.info.Subject)) {
-            metadata.push(`Onderwerp: ${cleanExtractedText(pdfData.info.Subject)}`)
-          }
-          if (pdfData.numpages) {
-            metadata.push(`Aantal pagina's: ${pdfData.numpages}`)
+          if (pdfData.info) {
+            if (pdfData.info.Title && pdfData.info.Title.trim() && hasReadableContent(pdfData.info.Title)) {
+              metadata.push(`Titel: ${cleanPdfText(pdfData.info.Title)}`)
+            }
+            if (pdfData.info.Author && pdfData.info.Author.trim() && hasReadableContent(pdfData.info.Author)) {
+              metadata.push(`Auteur: ${cleanPdfText(pdfData.info.Author)}`)
+            }
+            if (pdfData.info.Subject && pdfData.info.Subject.trim() && hasReadableContent(pdfData.info.Subject)) {
+              metadata.push(`Onderwerp: ${cleanPdfText(pdfData.info.Subject)}`)
+            }
+            if (pdfData.numpages) {
+              metadata.push(`Aantal pagina's: ${pdfData.numpages}`)
+            }
           }
           
           if (metadata.length > 0) {
-            content = `[PDF Metadata]\n${metadata.join('\n')}\n\n[PDF Inhoud]\n${content}`
+            content = `${metadata.join(' | ')}\n\n${content}`
           }
+          
+          method = 'pdf-parse-enhanced'
+          success = true
+          
+          console.log(`✅ PDF-parse successful for ${filePath}: ${content.length} chars, readable content detected`)
+          return { content, method, success }
         }
-        
-        method = 'pdf-parse-enhanced'
-        success = true
-        
-        console.log(`✅ PDF-parse successful for ${filePath}: ${content.length} chars`)
-        
-        // Validate content quality
-        if (content.trim().length < 50 || isGarbageText(content)) {
-          throw new Error('Extracted content is mostly garbage')
-        }
-        
-        return { content, method, success }
       }
     }
     
-    throw new Error('PDF-parse produced no usable content')
+    throw new Error('PDF-parse produced no readable content')
     
   } catch (pdfParseError) {
     console.warn(`⚠️ PDF-parse failed for ${filePath}:`, pdfParseError.message)
   }
 
-  // Strategy 2: Direct text extraction using regex patterns
+  // Strategy 2: Direct text stream extraction
   try {
-    console.log(`🔄 Trying regex extraction for ${filePath}`)
+    console.log(`🔄 Trying direct stream extraction for ${filePath}`)
     
-    const pdfText = pdfBuffer.toString('latin1')
+    // Convert to different encodings to find readable text
+    const encodings = ['utf8', 'latin1', 'ascii']
+    let bestContent = ''
+    let bestScore = 0
     
-    // Enhanced regex patterns for different PDF text encodings
-    const patterns = [
-      // Standard text objects
-      /BT\s+.*?ET/gs,
-      // Text in parentheses (most common)
-      /\(([^)]{3,})\)/g,
-      // Text in brackets
-      /\[([^\]]{3,})\]/g,
-      // Tj operator with text
-      /Tj\s*\(([^)]{3,})\)/g,
-      // TJ operator with text array
-      /TJ\s*\[([^\]]{3,})\]/g,
-      // Show text operators
-      /'\s*\(([^)]{3,})\)/g,
-      /"\s*\(([^)]{3,})\)/g
-    ]
-    
-    let extractedTexts: string[] = []
-    
-    for (const pattern of patterns) {
-      const matches = [...pdfText.matchAll(pattern)]
-      for (const match of matches) {
-        let text = match[1] || match[0]
+    for (const encoding of encodings) {
+      try {
+        const pdfText = pdfBuffer.toString(encoding as BufferEncoding)
         
-        // Clean up the matched text
-        text = text
-          .replace(/^BT\s*|\s*ET$/g, '') // Remove BT/ET
-          .replace(/^\(|\)$/g, '') // Remove parentheses
-          .replace(/^\[|\]$/g, '') // Remove brackets
-          .replace(/Tj\s*\(|\)/g, '') // Remove Tj operators
-          .replace(/TJ\s*\[|\]/g, '') // Remove TJ operators
-          .replace(/['"]\s*\(|\)/g, '') // Remove quote operators
-          .trim()
+        // Look for text streams and content
+        const textPatterns = [
+          // Text in parentheses (most common in PDF)
+          /\(([^)]{10,})\)/g,
+          // Text in brackets
+          /\[([^\]]{10,})\]/g,
+          // BT...ET text blocks
+          /BT\s+(.*?)\s+ET/gs,
+          // Stream content
+          /stream\s+(.*?)\s+endstream/gs
+        ]
         
-        if (text.length > 2 && /[a-zA-Z]/.test(text) && !isGarbageText(text)) {
-          extractedTexts.push(text)
+        let extractedTexts: string[] = []
+        
+        for (const pattern of textPatterns) {
+          const matches = [...pdfText.matchAll(pattern)]
+          for (const match of matches) {
+            let text = match[1] || match[0]
+            text = text.replace(/^BT\s*|\s*ET$/g, '').trim()
+            
+            if (text.length > 10 && /[a-zA-Z]/.test(text)) {
+              extractedTexts.push(text)
+            }
+          }
+        }
+        
+        if (extractedTexts.length > 0) {
+          const combinedText = extractedTexts.join(' ')
+          const cleanedText = cleanPdfText(combinedText)
+          
+          if (hasReadableContent(cleanedText)) {
+            const score = cleanedText.length * (cleanedText.match(/\b[a-zA-Z]{3,}\b/g) || []).length
+            if (score > bestScore) {
+              bestContent = cleanedText
+              bestScore = score
+            }
+          }
+        }
+      } catch (encodingError) {
+        console.warn(`Encoding ${encoding} failed for ${filePath}`)
+      }
+    }
+    
+    if (bestContent && bestScore > 100) {
+      content = bestContent.substring(0, 50000) // Limit to 50KB
+      method = 'stream-extraction'
+      success = true
+      
+      console.log(`✅ Stream extraction successful for ${filePath}: ${content.length} chars`)
+      return { content, method, success }
+    }
+    
+    throw new Error('Stream extraction found no readable content')
+    
+  } catch (streamError) {
+    console.warn(`⚠️ Stream extraction failed for ${filePath}:`, streamError.message)
+  }
+
+  // Strategy 3: OCR-style character detection
+  try {
+    console.log(`🔄 Trying character detection for ${filePath}`)
+    
+    const pdfText = pdfBuffer.toString('binary')
+    
+    // Look for readable character sequences
+    const readableSequences = []
+    let currentSequence = ''
+    
+    for (let i = 0; i < Math.min(pdfText.length, 50000); i++) {
+      const char = pdfText[i]
+      const charCode = char.charCodeAt(0)
+      
+      // Check if character is readable (letters, numbers, common punctuation)
+      if ((charCode >= 32 && charCode <= 126) || (charCode >= 160 && charCode <= 255)) {
+        if (/[a-zA-Z0-9\s.,!?;:()\-]/.test(char)) {
+          currentSequence += char
+        } else if (currentSequence.length > 0) {
+          if (currentSequence.trim().length > 10 && /[a-zA-Z]/.test(currentSequence)) {
+            readableSequences.push(currentSequence.trim())
+          }
+          currentSequence = ''
+        }
+      } else {
+        if (currentSequence.length > 0) {
+          if (currentSequence.trim().length > 10 && /[a-zA-Z]/.test(currentSequence)) {
+            readableSequences.push(currentSequence.trim())
+          }
+          currentSequence = ''
         }
       }
     }
     
-    if (extractedTexts.length > 0) {
-      // Remove duplicates and sort by length (longer texts first)
-      const uniqueTexts = [...new Set(extractedTexts)]
-        .filter(text => text.length > 5)
-        .sort((a, b) => b.length - a.length)
-      
-      content = uniqueTexts.join(' ').replace(/\s+/g, ' ').trim()
-      content = cleanExtractedText(content)
-      
-      method = 'regex-extraction'
-      success = true
-      
-      console.log(`✅ Regex extraction successful for ${filePath}: ${content.length} chars`)
-      
-      if (content.length > 30 && !isGarbageText(content)) {
-        return { content, method, success }
-      }
+    // Add final sequence
+    if (currentSequence.trim().length > 10 && /[a-zA-Z]/.test(currentSequence)) {
+      readableSequences.push(currentSequence.trim())
     }
     
-    throw new Error('Regex extraction produced no usable content')
-    
-  } catch (regexError) {
-    console.warn(`⚠️ Regex extraction failed for ${filePath}:`, regexError.message)
-  }
-
-  // Strategy 3: Brute force text search
-  try {
-    console.log(`🔄 Trying brute force extraction for ${filePath}`)
-    
-    const pdfText = pdfBuffer.toString('utf8', 0, Math.min(pdfBuffer.length, 100000)) // First 100KB
-    
-    // Look for readable text sequences
-    const readableTexts = pdfText.match(/[a-zA-Z][a-zA-Z0-9\s.,!?;:()\-]{10,}/g) || []
-    
-    if (readableTexts.length > 0) {
-      const cleanTexts = readableTexts
-        .filter(text => !isGarbageText(text))
-        .map(text => cleanExtractedText(text))
-        .filter(text => text.length > 10)
+    if (readableSequences.length > 0) {
+      const combinedText = readableSequences.join(' ')
+      const cleanedText = cleanPdfText(combinedText)
       
-      if (cleanTexts.length > 0) {
-        content = cleanTexts.join(' ').substring(0, 5000) // Limit to 5KB
-        method = 'brute-force'
+      if (hasReadableContent(cleanedText)) {
+        content = cleanedText.substring(0, 30000) // Limit to 30KB
+        method = 'character-detection'
         success = true
         
-        console.log(`✅ Brute force extraction found some text for ${filePath}: ${content.length} chars`)
+        console.log(`✅ Character detection found readable content for ${filePath}: ${content.length} chars`)
         return { content, method, success }
       }
     }
     
-    throw new Error('Brute force extraction found no readable text')
+    throw new Error('Character detection found no readable sequences')
     
-  } catch (bruteError) {
-    console.warn(`⚠️ Brute force extraction failed for ${filePath}:`, bruteError.message)
+  } catch (charError) {
+    console.warn(`⚠️ Character detection failed for ${filePath}:`, charError.message)
   }
 
-  // If all strategies fail, return descriptive error
-  throw new Error('All PDF text extraction strategies failed')
+  // If all strategies fail, provide informative error
+  throw new Error(`Alle PDF tekstextractie strategieën faalden voor ${filePath}. Dit kan een gescand document, beveiligd PDF, of beschadigd bestand zijn.`)
 }
 
 export async function POST(request: NextRequest) {
@@ -264,192 +282,84 @@ export async function POST(request: NextRequest) {
       )
     }
 
+    // KRITIEKE WIJZIGING: Alleen PDF bestanden verwerken
+    if (fileType !== 'pdf') {
+      return NextResponse.json(
+        { success: false, error: 'Only PDF files are supported' },
+        { status: 400 }
+      )
+    }
+
     const dbx = new Dropbox({ accessToken, fetch: fetch as any })
 
     try {
       // Download file content
-      console.log(`📥 Downloading ${filePath} (${fileType})`)
+      console.log(`📥 Downloading PDF: ${filePath}`)
       const response = await dbx.filesDownload({ path: filePath })
       const fileBlob = (response.result as any).fileBinary
 
       let content = ''
-      let extractionMethod = 'direct'
-      let extractionSuccess = true
+      let extractionMethod = 'unknown'
+      let extractionSuccess = false
 
-      if (fileType === 'text' || fileType === 'other') {
-        // Enhanced text file processing
-        try {
-          if (fileBlob instanceof ArrayBuffer) {
-            content = new TextDecoder('utf-8').decode(fileBlob)
-          } else if (Buffer.isBuffer(fileBlob)) {
-            content = fileBlob.toString('utf-8')
+      // FOCUS: Alleen PDF verwerking
+      try {
+        let pdfBuffer: Buffer
+        
+        if (fileBlob instanceof ArrayBuffer) {
+          pdfBuffer = Buffer.from(fileBlob)
+        } else if (Buffer.isBuffer(fileBlob)) {
+          pdfBuffer = fileBlob
+        } else {
+          pdfBuffer = Buffer.from(fileBlob)
+        }
+
+        console.log(`🔍 Processing PDF: ${filePath} (${(pdfBuffer.length / 1024).toFixed(1)} KB)`)
+        
+        const result = await extractPdfTextAdvanced(pdfBuffer, filePath)
+        content = result.content
+        extractionMethod = result.method
+        extractionSuccess = result.success
+        
+        console.log(`✅ PDF processed successfully: ${filePath} using ${extractionMethod}`)
+        
+      } catch (pdfError) {
+        console.error(`❌ PDF extraction failed for ${filePath}:`, pdfError)
+        
+        let errorMessage = 'Onbekende fout bij PDF verwerking'
+        
+        if (pdfError instanceof Error) {
+          if (pdfError.message.includes('Invalid PDF') || pdfError.message.includes('not a valid')) {
+            errorMessage = 'Ongeldig PDF formaat'
+          } else if (pdfError.message.includes('encrypted') || pdfError.message.includes('password')) {
+            errorMessage = 'PDF is beveiligd met een wachtwoord'
+          } else if (pdfError.message.includes('corrupted')) {
+            errorMessage = 'PDF bestand is beschadigd'
           } else {
-            content = String(fileBlob)
+            errorMessage = pdfError.message
           }
-          
-          // If UTF-8 fails, try other encodings
-          if (!content || content.includes('�')) {
-            if (fileBlob instanceof ArrayBuffer) {
-              content = new TextDecoder('latin1').decode(fileBlob)
-            } else if (Buffer.isBuffer(fileBlob)) {
-              content = fileBlob.toString('latin1')
-            }
-          }
-          
-          content = cleanExtractedText(content)
-          extractionMethod = 'text-encoding'
-          
-        } catch (textError) {
-          console.warn(`Text extraction failed for ${filePath}:`, textError)
-          content = `[Tekstbestand: ${filePath}]\nFout bij tekstextractie. Bestand mogelijk beschadigd of gebruikt onbekende encoding.`
-          extractionSuccess = false
         }
         
-      } else if (fileType === 'pdf') {
-        // KRITIEKE VERBETERING: Robuuste PDF parsing
-        try {
-          let pdfBuffer: Buffer
-          
-          if (fileBlob instanceof ArrayBuffer) {
-            pdfBuffer = Buffer.from(fileBlob)
-          } else if (Buffer.isBuffer(fileBlob)) {
-            pdfBuffer = fileBlob
-          } else {
-            pdfBuffer = Buffer.from(fileBlob)
-          }
+        content = `[PDF: ${filePath}]
+[Status: Extractie gefaald - ${errorMessage}]
 
-          console.log(`🔍 Processing PDF: ${filePath} (${pdfBuffer.length} bytes)`)
-          
-          const result = await extractPdfText(pdfBuffer, filePath)
-          content = result.content
-          extractionMethod = result.method
-          extractionSuccess = result.success
-          
-          console.log(`✅ PDF processed successfully: ${filePath} using ${extractionMethod}`)
-          
-        } catch (pdfError) {
-          console.error(`❌ All PDF extraction failed for ${filePath}:`, pdfError)
-          
-          let errorMessage = 'Onbekende fout bij PDF verwerking'
-          
-          if (pdfError instanceof Error) {
-            if (pdfError.message.includes('Invalid PDF') || pdfError.message.includes('not a valid')) {
-              errorMessage = 'Ongeldig PDF formaat'
-            } else if (pdfError.message.includes('encrypted') || pdfError.message.includes('password')) {
-              errorMessage = 'PDF is beveiligd met een wachtwoord'
-            } else if (pdfError.message.includes('corrupted')) {
-              errorMessage = 'PDF bestand is beschadigd'
-            } else {
-              errorMessage = pdfError.message
-            }
-          }
-          
-          content = `[PDF bestand: ${filePath}]
-[Status: Fout bij verwerking - ${errorMessage}]
-
-Dit PDF bestand kon niet automatisch worden verwerkt.
+Dit PDF bestand kon niet automatisch worden gelezen.
 
 Mogelijke oorzaken:
-- Gescand document (alleen afbeeldingen)
+- Gescand document (alleen afbeeldingen, geen tekst)
 - Beveiligd/versleuteld PDF
 - Beschadigd bestand
-- Complexe formatting
+- Complexe formatting of speciale encoding
 
-Mogelijke oplossingen:
-- Converteer PDF naar tekstformaat
-- Gebruik OCR software voor gescande PDF's
-- Controleer of het bestand beschadigd is
-- Probeer een andere PDF viewer
-
-Bestand wordt geregistreerd voor bestandsnaam-zoekopdrachten.`
-          
-          extractionSuccess = false
-          extractionMethod = 'pdf-error-fallback'
-        }
+Het bestand is wel geregistreerd voor bestandsnaam-zoekopdrachten.`
         
-      } else if (fileType === 'docx') {
-        // Enhanced DOCX parsing
-        try {
-          const mammoth = (await import('mammoth')).default
-          let docxBuffer: Buffer
-          
-          if (fileBlob instanceof ArrayBuffer) {
-            docxBuffer = Buffer.from(fileBlob)
-          } else if (Buffer.isBuffer(fileBlob)) {
-            docxBuffer = fileBlob
-          } else {
-            docxBuffer = Buffer.from(fileBlob)
-          }
-
-          if (docxBuffer.length === 0) {
-            throw new Error('DOCX bestand is leeg')
-          }
-          
-          const result = await mammoth.extractRawText({ 
-            buffer: docxBuffer,
-            includeEmbeddedStyleMap: true
-          })
-          
-          content = result.value || ''
-          
-          // Clean and normalize DOCX content
-          if (content) {
-            content = cleanExtractedText(content)
-          }
-          
-          if (result.messages && result.messages.length > 0) {
-            const warnings = result.messages
-              .filter(msg => msg.type === 'warning')
-              .slice(0, 3)
-              .map(msg => msg.message)
-              .join('\n')
-            
-            if (warnings) {
-              content = `[DOCX Extractie Info]\n${warnings}\n\n[DOCX Inhoud]\n${content}`
-            }
-          }
-
-          if (!content || content.trim().length < 10) {
-            content = `[DOCX bestand: ${filePath}]\n[Status: Geen tekstinhoud geëxtraheerd]\n\nDit Word document bevat mogelijk alleen afbeeldingen, tabellen of complexe formatting.\n\nTip: Open het bestand in Word en sla het opnieuw op als .docx of .txt voor betere compatibiliteit.`
-            extractionSuccess = false
-          } else {
-            extractionMethod = 'mammoth-success'
-          }
-          
-        } catch (docxError) {
-          console.error('DOCX parsing error:', docxError)
-          
-          let errorMessage = 'Onbekende fout bij DOCX verwerking'
-          if (docxError instanceof Error) {
-            if (docxError.message.includes('not a valid zip file')) {
-              errorMessage = 'Bestand is geen geldig DOCX formaat'
-            } else if (docxError.message.includes('corrupted')) {
-              errorMessage = 'DOCX bestand is beschadigd'
-            } else {
-              errorMessage = docxError.message
-            }
-          }
-          
-          content = `[DOCX bestand: ${filePath}]\n[Status: Fout bij verwerking - ${errorMessage}]\n\nDit Word document kon niet worden verwerkt.\n\nMogelijke oplossingen:\n- Open in Microsoft Word en sla opnieuw op\n- Converteer naar .txt formaat\n- Controleer of het bestand beschadigd is\n\nBestand wordt geregistreerd voor bestandsnaam-zoekopdrachten.`
-          extractionSuccess = false
-          extractionMethod = 'docx-error-fallback'
-        }
-        
-      } else if (fileType === 'image') {
-        // Image handling - provide useful placeholder
-        const fileName = filePath.split('/').pop() || 'unknown'
-        const fileExt = fileName.split('.').pop()?.toLowerCase() || 'unknown'
-        const fileSize = fileBlob instanceof ArrayBuffer ? fileBlob.byteLength : 
-                        Buffer.isBuffer(fileBlob) ? fileBlob.length : 
-                        String(fileBlob).length
-        
-        content = `[Afbeelding: ${fileName}]\nFormaat: ${fileExt.toUpperCase()}\nGrootte: ${(fileSize / 1024).toFixed(1)} KB\n\nAfbeelding gedetecteerd. Voor tekstextractie uit afbeeldingen zou OCR (Optical Character Recognition) geïmplementeerd kunnen worden.`
-        extractionMethod = 'image-placeholder'
+        extractionSuccess = false
+        extractionMethod = 'pdf-error-fallback'
       }
 
-      // Final content validation and cleaning
+      // Final content validation
       if (content && content.length > 0) {
-        // Final cleanup
+        // Final cleanup for PDF content
         content = content
           .replace(/\0/g, '') // Remove null bytes
           .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '') // Remove control characters
@@ -463,9 +373,9 @@ Bestand wordt geregistreerd voor bestandsnaam-zoekopdrachten.`
           .replace(/\n{4,}/g, '\n\n\n') // Max 3 consecutive newlines
           .trim()
         
-        // Intelligent truncation for very large files
-        if (content.length > 200000) {
-          let truncateAt = 200000
+        // Intelligent truncation for very large PDFs
+        if (content.length > 100000) {
+          let truncateAt = 100000
           const sentenceEnd = content.lastIndexOf('.', truncateAt)
           const paragraphEnd = content.lastIndexOf('\n\n', truncateAt)
           
@@ -475,17 +385,26 @@ Bestand wordt geregistreerd voor bestandsnaam-zoekopdrachten.`
             truncateAt = paragraphEnd + 2
           }
           
-          content = content.substring(0, truncateAt) + '\n\n[Bestand ingekort - eerste 200.000 karakters getoond voor indexering]'
+          content = content.substring(0, truncateAt) + '\n\n[PDF ingekort - eerste 100.000 karakters getoond voor indexering]'
         }
       }
 
       // Ensure we always have indexable content
-      if (!content || content.trim().length < 3) {
-        content = `[Bestand: ${filePath}]\n[Type: ${fileType}]\n[Status: Geen tekstinhoud beschikbaar]\n\nDit bestand wordt geregistreerd voor bestandsnaam-gebaseerde zoekopdrachten.`
+      if (!content || content.trim().length < 10) {
+        content = `[PDF: ${filePath}]
+[Status: Geen leesbare tekst gevonden]
+
+Dit PDF bestand bevat mogelijk:
+- Alleen afbeeldingen (gescand document)
+- Beveiligde/versleutelde inhoud
+- Complexe formatting
+
+Voor gescande PDF's is OCR (Optical Character Recognition) nodig.
+Het bestand wordt geregistreerd voor bestandsnaam-zoekopdrachten.`
         extractionSuccess = false
       }
 
-      console.log(`✅ File processed: ${filePath} -> ${content.length} chars (${extractionMethod})`)
+      console.log(`✅ PDF processed: ${filePath} -> ${content.length} chars (${extractionMethod}, success: ${extractionSuccess})`)
 
       return NextResponse.json({
         success: true,
@@ -503,7 +422,7 @@ Bestand wordt geregistreerd voor bestandsnaam-zoekopdrachten.`
     } catch (dropboxError: any) {
       console.error('Dropbox download error:', dropboxError)
       
-      let errorMessage = 'Failed to download file content'
+      let errorMessage = 'Failed to download PDF from Dropbox'
       if (dropboxError.error?.error_summary) {
         errorMessage = dropboxError.error.error_summary
       } else if (dropboxError.message) {
@@ -511,7 +430,11 @@ Bestand wordt geregistreerd voor bestandsnaam-zoekopdrachten.`
       }
 
       // Return fallback content for download errors
-      const fallbackContent = `[Bestand: ${filePath}]\n[Status: Download fout - ${errorMessage}]\n\nDit bestand kon niet worden gedownload van Dropbox maar wordt geregistreerd voor bestandsnaam-zoekopdrachten.`
+      const fallbackContent = `[PDF: ${filePath}]
+[Status: Download fout - ${errorMessage}]
+
+Dit PDF bestand kon niet worden gedownload van Dropbox.
+Het bestand wordt geregistreerd voor bestandsnaam-zoekopdrachten.`
 
       return NextResponse.json({
         success: true,
@@ -520,7 +443,7 @@ Bestand wordt geregistreerd voor bestandsnaam-zoekopdrachten.`
         fileType: fileType,
         size: fallbackContent.length,
         originalSize: 0,
-        extractionMethod: 'error-fallback',
+        extractionMethod: 'download-error-fallback',
         extractionSuccess: false,
         error: errorMessage
       })
@@ -529,14 +452,17 @@ Bestand wordt geregistreerd voor bestandsnaam-zoekopdrachten.`
   } catch (error) {
     console.error('Content API error:', error)
     
-    const errorContent = `[API Fout]\n[Fout: ${error instanceof Error ? error.message : 'Unknown error'}]\n\nTechnische fout bij bestandsverwerking. Indexering gaat door met andere bestanden.`
+    const errorContent = `[PDF API Fout]
+[Fout: ${error instanceof Error ? error.message : 'Unknown error'}]
+
+Technische fout bij PDF verwerking.`
     
     return NextResponse.json(
       { 
         success: true,
         content: errorContent,
         filePath: 'unknown',
-        fileType: 'error',
+        fileType: 'pdf',
         size: errorContent.length,
         originalSize: 0,
         extractionMethod: 'api-error-fallback',
