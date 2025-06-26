@@ -266,30 +266,54 @@ Geef een duidelijk en uitgebreid antwoord. Als je aanvullende context of verduid
       </h2>
 
       <div className="space-y-6">
-        {/* Mode Toggle */}
+        {/* Mode Toggle - Verbeterde styling en labels */}
         <div className="flex items-center justify-center">
-          <div className="bg-gray-100 rounded-lg p-1 flex">
+          <div className="bg-gray-100 rounded-xl p-1 flex shadow-inner">
             <button
               onClick={() => setSearchMode('search')}
-              className={`px-4 py-2 rounded-md text-sm font-medium transition-all ${
+              className={`px-6 py-3 rounded-lg text-sm font-semibold transition-all duration-200 flex items-center space-x-2 ${
                 searchMode === 'search'
-                  ? 'bg-blue-600 text-white shadow-sm'
-                  : 'text-gray-600 hover:text-blue-600'
+                  ? 'bg-blue-600 text-white shadow-lg transform scale-105'
+                  : 'text-gray-600 hover:text-blue-600 hover:bg-blue-50'
               }`}
             >
-              🔍 Zoek in Bestanden
+              <span className="text-lg">🔍</span>
+              <span>Zoek in Bestanden</span>
+              <span className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded-full">
+                {fileIndex.length} bestanden
+              </span>
             </button>
             <button
               onClick={() => setSearchMode('ask')}
-              className={`px-4 py-2 rounded-md text-sm font-medium transition-all ${
+              className={`px-6 py-3 rounded-lg text-sm font-semibold transition-all duration-200 flex items-center space-x-2 ${
                 searchMode === 'ask'
-                  ? 'bg-purple-600 text-white shadow-sm'
-                  : 'text-gray-600 hover:text-purple-600'
+                  ? 'bg-purple-600 text-white shadow-lg transform scale-105'
+                  : 'text-gray-600 hover:text-purple-600 hover:bg-purple-50'
               }`}
             >
-              🤖 Vraag AI
+              <span className="text-lg">🤖</span>
+              <span>Vraag AI</span>
+              <span className="text-xs bg-purple-100 text-purple-700 px-2 py-1 rounded-full">
+                Direct
+              </span>
             </button>
           </div>
+        </div>
+
+        {/* Mode Explanation */}
+        <div className={`text-center p-4 rounded-lg ${
+          searchMode === 'search' 
+            ? 'bg-blue-50 border border-blue-200' 
+            : 'bg-purple-50 border border-purple-200'
+        }`}>
+          <p className={`text-sm ${
+            searchMode === 'search' ? 'text-blue-700' : 'text-purple-700'
+          }`}>
+            {searchMode === 'search' 
+              ? `🔍 Zoek door je ${fileIndex.length} geïndexeerde Dropbox bestanden en krijg AI-antwoorden gebaseerd op de gevonden inhoud`
+              : '🤖 Stel directe vragen aan Gemini AI zonder door je bestanden te zoeken'
+            }
+          </p>
         </div>
 
         {/* Search Input */}
@@ -305,7 +329,11 @@ Geef een duidelijk en uitgebreid antwoord. Als je aanvullende context of verduid
                   ? "Stel een vraag over je bestanden... (bijv. 'Wat staat er in mijn projectdocumenten?')"
                   : "Stel een vraag aan Gemini AI... (bijv. 'Leg uit hoe machine learning werkt')"
               }
-              className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              className={`w-full px-4 py-3 border-2 rounded-lg focus:ring-2 focus:ring-offset-2 transition-all ${
+                searchMode === 'search'
+                  ? 'border-blue-300 focus:border-blue-500 focus:ring-blue-500'
+                  : 'border-purple-300 focus:border-purple-500 focus:ring-purple-500'
+              }`}
               disabled={isSearching}
             />
           </div>
@@ -313,10 +341,10 @@ Geef een duidelijk en uitgebreid antwoord. Als je aanvullende context of verduid
           <button
             onClick={searchMode === 'search' ? performSearch : askAI}
             disabled={isSearching || !query.trim()}
-            className={`px-6 py-3 text-white rounded-lg focus:outline-none focus:ring-2 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center ${
+            className={`px-8 py-3 text-white rounded-lg focus:outline-none focus:ring-2 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200 flex items-center font-semibold ${
               searchMode === 'search'
-                ? 'bg-blue-600 hover:bg-blue-700 focus:ring-blue-500'
-                : 'bg-purple-600 hover:bg-purple-700 focus:ring-purple-500'
+                ? 'bg-blue-600 hover:bg-blue-700 focus:ring-blue-500 shadow-lg hover:shadow-xl'
+                : 'bg-purple-600 hover:bg-purple-700 focus:ring-purple-500 shadow-lg hover:shadow-xl'
             }`}
           >
             {isSearching ? (
@@ -333,7 +361,7 @@ Geef een duidelijk en uitgebreid antwoord. Als je aanvullende context of verduid
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                   )}
                 </svg>
-                {searchMode === 'search' ? 'Zoeken' : 'Vraag AI'}
+                {searchMode === 'search' ? 'Zoek in Bestanden' : 'Vraag AI'}
               </>
             )}
           </button>
