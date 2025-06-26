@@ -138,362 +138,45 @@ export default function ResponseActions({
       .trim()
   }
 
-  // Advanced markdown to Word document converter
-  const convertMarkdownToWordDocument = (markdown: string, Document: any, Paragraph: any, TextRun: any) => {
-    const lines = markdown.split('\n')
-    const paragraphs: any[] = []
-    let currentBulletList: string[] = []
-    let currentNumberedList: Array<{number: string, text: string}> = []
-    let isInCodeBlock = false
-    let codeBlockContent = ''
-    let codeBlockLanguage = ''
-    let isInBlockquote = false
-    let blockquoteContent: string[] = []
-
-    // Flush different types of content
-    const flushBulletList = () => {
-      if (currentBulletList.length > 0) {
-        currentBulletList.forEach(item => {
-          const formattedRuns = parseInlineFormatting(item, TextRun)
-          paragraphs.push(new Paragraph({
-            children: [new TextRun({ text: "• " }), ...formattedRuns],
-            spacing: { after: 120 },
-            indent: { left: 400 }
-          }))
-        })
-        currentBulletList = []
-      }
-    }
-
-    const flushNumberedList = () => {
-      if (currentNumberedList.length > 0) {
-        currentNumberedList.forEach(item => {
-          const formattedRuns = parseInlineFormatting(item.text, TextRun)
-          paragraphs.push(new Paragraph({
-            children: [new TextRun({ text: `${item.number}. ` }), ...formattedRuns],
-            spacing: { after: 120 },
-            indent: { left: 400 }
-          }))
-        })
-        currentNumberedList = []
-      }
-    }
-
-    const flushCodeBlock = () => {
-      if (codeBlockContent) {
-        // Add language label if specified
-        if (codeBlockLanguage) {
-          paragraphs.push(new Paragraph({
-            children: [new TextRun({ 
-              text: `[${codeBlockLanguage.toUpperCase()}]`,
-              italics: true,
-              size: 18,
-              color: "666666"
-            })],
-            spacing: { after: 80 }
-          }))
-        }
-        
-        // Split code into lines for better formatting
-        const codeLines = codeBlockContent.trim().split('\n')
-        codeLines.forEach(codeLine => {
-          paragraphs.push(new Paragraph({
-            children: [new TextRun({ 
-              text: codeLine || " ", // Empty line becomes space
-              font: "Consolas",
-              size: 20,
-              color: "000080"
-            })],
-            spacing: { after: 40 },
-            indent: { left: 400 },
-            border: {
-              left: { color: "CCCCCC", space: 1, style: "single", size: 6 }
-            }
-          }))
-        })
-        
-        paragraphs.push(new Paragraph({
-          children: [new TextRun({ text: "" })],
-          spacing: { after: 200 }
-        }))
-        
-        codeBlockContent = ''
-        codeBlockLanguage = ''
-      }
-    }
-
-    const flushBlockquote = () => {
-      if (blockquoteContent.length > 0) {
-        blockquoteContent.forEach(line => {
-          const formattedRuns = parseInlineFormatting(line, TextRun)
-          paragraphs.push(new Paragraph({
-            children: formattedRuns,
-            spacing: { after: 120 },
-            indent: { left: 600 },
-            border: {
-              left: { color: "4472C4", space: 1, style: "single", size: 12 }
-            }
-          }))
-        })
-        blockquoteContent = []
-      }
-    }
-
-    // Parse inline formatting (bold, italic, code, links, strikethrough)
-    const parseInlineFormatting = (text: string, TextRun: any): any[] => {
-      const runs: any[] = []
-      
-      // Enhanced regex to handle complex combinations
-      const regex = /(\*\*\*[^*]+\*\*\*|\*\*[^*]+\*\*|\*[^*]+\*|___[^_]+___|__[^_]+__|_[^_]+_|`[^`]+`|~~[^~]+~~|\[([^\]]+)\]\(([^)]+)\))/g
-      
-      let lastIndex = 0
-      let match
-      
-      while ((match = regex.exec(text)) !== null) {
-        // Add regular text before the match
-        if (match.index > lastIndex) {
-          const beforeText = text.slice(lastIndex, match.index)
-          if (beforeText) {
-            runs.push(new TextRun({ text: beforeText }))
-          }
-        }
-        
-        const matchedText = match[0]
-        
-        if (matchedText.startsWith('***') && matchedText.endsWith('***')) {
-          // Bold + Italic
-          runs.push(new TextRun({ 
-            text: matchedText.slice(3, -3), 
-            bold: true, 
-            italics: true 
-          }))
-        } else if (matchedText.startsWith('**') && matchedText.endsWith('**')) {
-          // Bold
-          runs.push(new TextRun({ 
-            text: matchedText.slice(2, -2), 
-            bold: true 
-          }))
-        } else if (matchedText.startsWith('*') && matchedText.endsWith('*')) {
-          // Italic
-          runs.push(new TextRun({ 
-            text: matchedText.slice(1, -1), 
-            italics: true 
-          }))
-        } else if (matchedText.startsWith('___') && matchedText.endsWith('___')) {
-          // Bold + Italic (alternative)
-          runs.push(new TextRun({ 
-            text: matchedText.slice(3, -3), 
-            bold: true, 
-            italics: true 
-          }))
-        } else if (matchedText.startsWith('__') && matchedText.endsWith('__')) {
-          // Bold (alternative)
-          runs.push(new TextRun({ 
-            text: matchedText.slice(2, -2), 
-            bold: true 
-          }))
-        } else if (matchedText.startsWith('_') && matchedText.endsWith('_')) {
-          // Italic (alternative)
-          runs.push(new TextRun({ 
-            text: matchedText.slice(1, -1), 
-            italics: true 
-          }))
-        } else if (matchedText.startsWith('`') && matchedText.endsWith('`')) {
-          // Inline code
-          runs.push(new TextRun({ 
-            text: matchedText.slice(1, -1), 
-            font: "Consolas",
-            color: "DC143C",
-            highlight: "yellow"
-          }))
-        } else if (matchedText.startsWith('~~') && matchedText.endsWith('~~')) {
-          // Strikethrough
-          runs.push(new TextRun({ 
-            text: matchedText.slice(2, -2), 
-            strike: true 
-          }))
-        } else if (matchedText.startsWith('[') && match[2] && match[3]) {
-          // Links [text](url)
-          runs.push(new TextRun({ 
-            text: match[2],
-            color: "0000EE",
-            underline: {}
-          }))
-        }
-        
-        lastIndex = regex.lastIndex
-      }
-      
-      // Add remaining text
-      if (lastIndex < text.length) {
-        const remainingText = text.slice(lastIndex)
-        if (remainingText) {
-          runs.push(new TextRun({ text: remainingText }))
-        }
-      }
-      
-      return runs.length > 0 ? runs : [new TextRun({ text: text })]
-    }
-
-    // Process each line
-    lines.forEach((line, index) => {
-      const trimmedLine = line.trim()
-      const originalLine = line
-
-      // Handle code blocks
-      const codeBlockMatch = trimmedLine.match(/^```(\w+)?/)
-      if (codeBlockMatch) {
-        if (isInCodeBlock) {
-          flushCodeBlock()
-          isInCodeBlock = false
-        } else {
-          flushBulletList()
-          flushNumberedList()
-          flushBlockquote()
-          isInCodeBlock = true
-          codeBlockLanguage = codeBlockMatch[1] || ''
-        }
-        return
-      }
-
-      if (isInCodeBlock) {
-        codeBlockContent += originalLine + '\n'
-        return
-      }
-
-      // Handle blockquotes
-      const blockquoteMatch = trimmedLine.match(/^>\s*(.*)$/)
-      if (blockquoteMatch) {
-        if (!isInBlockquote) {
-          flushBulletList()
-          flushNumberedList()
-          isInBlockquote = true
-        }
-        blockquoteContent.push(blockquoteMatch[1])
-        return
-      } else if (isInBlockquote) {
-        flushBlockquote()
-        isInBlockquote = false
-      }
-
-      // Handle horizontal rules
-      if (trimmedLine.match(/^(-{3,}|\*{3,}|_{3,})$/)) {
-        flushBulletList()
-        flushNumberedList()
-        paragraphs.push(new Paragraph({
-          children: [new TextRun({ text: "─────────────────────────────────" })],
-          spacing: { after: 200, before: 200 },
-          alignment: "center"
-        }))
-        return
-      }
-
-      // Handle headers
-      const headerMatch = trimmedLine.match(/^(#{1,6})\s+(.+)$/)
-      if (headerMatch) {
-        flushBulletList()
-        flushNumberedList()
-        const level = headerMatch[1].length
-        const headerText = headerMatch[2]
-        const formattedRuns = parseInlineFormatting(headerText, TextRun)
-
-        paragraphs.push(new Paragraph({
-          children: formattedRuns.map((run: any) => new TextRun({
-            ...run,
-            bold: true,
-            size: level === 1 ? 32 : level === 2 ? 28 : level === 3 ? 24 : level === 4 ? 22 : level === 5 ? 20 : 18,
-            color: level <= 2 ? "1F4E79" : "2F75B5"
-          })),
-          spacing: { after: 240, before: level === 1 ? 480 : 240 }
-        }))
-        return
-      }
-
-      // Handle bullet lists
-      const bulletMatch = trimmedLine.match(/^([-*+])\s+(.+)$/)
-      if (bulletMatch) {
-        flushNumberedList()
-        currentBulletList.push(bulletMatch[2])
-        return
-      }
-
-      // Handle numbered lists
-      const numberedMatch = trimmedLine.match(/^(\d+)\.\s+(.+)$/)
-      if (numberedMatch) {
-        flushBulletList()
-        currentNumberedList.push({
-          number: numberedMatch[1],
-          text: numberedMatch[2]
-        })
-        return
-      }
-
-      // Handle regular paragraphs
-      if (trimmedLine) {
-        flushBulletList()
-        flushNumberedList()
-        
-        const formattedRuns = parseInlineFormatting(trimmedLine, TextRun)
-        paragraphs.push(new Paragraph({
-          children: formattedRuns,
-          spacing: { after: 200 }
-        }))
-      } else {
-        // Empty line
-        flushBulletList()
-        flushNumberedList()
-        if (index < lines.length - 1) { // Don't add spacing for last empty line
-          paragraphs.push(new Paragraph({
-            children: [new TextRun({ text: "" })],
-            spacing: { after: 120 }
-          }))
-        }
-      }
-    })
-
-    // Flush any remaining content
-    flushBulletList()
-    flushNumberedList()
-    flushCodeBlock()
-    flushBlockquote()
-
-    return new Document({
-      creator: "Chatbot AI Assistant",
-      title: "AI Generated Response",
-      description: "Professional document generated from AI chatbot response",
-      sections: [{
-        properties: {},
-        children: paragraphs.length > 0 ? paragraphs : [
-          new Paragraph({
-            children: [new TextRun({ text: "No content available" })]
-          })
-        ]
-      }]
-    })
-  }
-
-  // Handle Word document download
+  // Handle Word document download via API
   const handleWordDownload = async () => {
     if (isStreaming || !content.trim()) return
 
     setWordDownloadStatus('generating')
     
     try {
-      // Import all docx components dynamically to avoid SSR issues
-      const { Packer, Document, Paragraph, TextRun } = await import('docx')
+      const response = await fetch('/api/generate-docx', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ content }),
+      })
+
+      if (!response.ok) {
+        const errorData = await response.json()
+        throw new Error(errorData.error || 'Failed to generate Word document')
+      }
+
+      // Get the blob from the response
+      const blob = await response.blob()
       
-      const doc = convertMarkdownToWordDocument(content, Document, Paragraph, TextRun)
-      const blob = await Packer.toBlob(doc)
+      // Get filename from Content-Disposition header or generate one
+      const contentDisposition = response.headers.get('Content-Disposition')
+      let filename = 'Chatbot_Response.docx'
+      
+      if (contentDisposition) {
+        const filenameMatch = contentDisposition.match(/filename="([^"]+)"/)
+        if (filenameMatch) {
+          filename = filenameMatch[1]
+        }
+      }
       
       // Create download link
       const url = URL.createObjectURL(blob)
       const link = document.createElement('a')
       link.href = url
-      
-      // Generate filename with timestamp
-      const now = new Date()
-      const timestamp = now.toISOString().slice(0, 16).replace('T', '_').replace(/:/g, '-')
-      link.download = `Chatbot_Response_${timestamp}.docx`
+      link.download = filename
       
       // Trigger download
       document.body.appendChild(link)
