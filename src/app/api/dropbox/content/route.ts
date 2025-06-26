@@ -12,7 +12,7 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    const dbx = new Dropbox({ accessToken })
+    const dbx = new Dropbox({ accessToken, fetch: fetch })
 
     try {
       // Download file content

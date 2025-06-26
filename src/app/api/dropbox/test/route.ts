@@ -13,7 +13,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Initialize Dropbox client
-    const dbx = new Dropbox({ accessToken })
+    const dbx = new Dropbox({ accessToken, fetch: fetch })
 
     try {
       // Test 1: Get account info
