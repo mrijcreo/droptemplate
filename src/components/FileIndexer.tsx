@@ -41,9 +41,12 @@ export default function FileIndexer({
     errors: 0,
     pdfFiles: 0,
     docxFiles: 0,
-    imageFiles: 0
+    imageFiles: 0,
+    successfulExtractions: 0,
+    partialExtractions: 0
   })
   const [showResetOptions, setShowResetOptions] = useState(false)
+  const [processingDetails, setProcessingDetails] = useState<string[]>([])
   const abortControllerRef = useRef<AbortController | null>(null)
 
   const handleResetClick = () => {
@@ -68,7 +71,8 @@ export default function FileIndexer({
   const startIndexing = async (resetFromZero: boolean = false) => {
     setIsIndexing(true)
     setIndexingError('')
-    setIndexingStatus('Bestanden ophalen van Dropbox...')
+    setIndexingStatus('🔍 Bestanden ophalen van Dropbox...')
+    setProcessingDetails([])
     setIndexingStats({
       totalFiles: 0,
       processedFiles: 0,
@@ -77,7 +81,9 @@ export default function FileIndexer({
       errors: 0,
       pdfFiles: 0,
       docxFiles: 0,
-      imageFiles: 0
+      imageFiles: 0,
+      successfulExtractions: 0,
+      partialExtractions: 0
     })
 
     // Create abort controller for cancellation
@@ -123,9 +129,9 @@ export default function FileIndexer({
           return fileModified > existingModified
         })
 
-        setIndexingStatus(`${allFiles.length} bestanden gevonden. ${filesToProcess.length} nieuwe/gewijzigde bestanden te verwerken...`)
+        setIndexingStatus(`📊 ${allFiles.length} bestanden gevonden. ${filesToProcess.length} nieuwe/gewijzigde bestanden te verwerken...`)
       } else {
-        setIndexingStatus(`${allFiles.length} bestanden gevonden. Alle bestanden indexeren...`)
+        setIndexingStatus(`📊 ${allFiles.length} bestanden gevonden. Alle bestanden grondig indexeren...`)
       }
 
       const fileIndex: FileIndex[] = resetFromZero ? [] : [...existingIndex]
@@ -133,14 +139,14 @@ export default function FileIndexer({
 
       // If no new files to process
       if (filesToProcess.length === 0) {
-        setIndexingStatus(`Geen nieuwe bestanden gevonden. Index is up-to-date met ${existingIndex.length} bestanden.`)
+        setIndexingStatus(`✅ Geen nieuwe bestanden gevonden. Index is up-to-date met ${existingIndex.length} bestanden.`)
         onIndexComplete(existingIndex)
         setIsIndexing(false)
         return
       }
 
-      // Process files in smaller batches to avoid overwhelming the API
-      const batchSize = 3 // Reduced from 5 to be more gentle on the API
+      // Process files in very small batches for maximum reliability
+      const batchSize = 2 // Reduced to 2 for better error handling
       for (let i = 0; i < filesToProcess.length; i += batchSize) {
         if (abortControllerRef.current?.signal.aborted) {
           throw new Error('Indexering geannuleerd')
@@ -149,30 +155,31 @@ export default function FileIndexer({
         const batch = filesToProcess.slice(i, i + batchSize)
         const batchPromises = batch.map(async (file: any) => {
           try {
-            // Determine file type
+            // Determine file type with expanded detection
             const fileType = getFileType(file.name)
             
-            // Skip very large files (increased limit for better coverage)
-            if (file.size > 25 * 1024 * 1024) { // 25MB limit
+            // Skip very large files but with higher limit
+            if (file.size > 50 * 1024 * 1024) { // 50MB limit
               setIndexingStats(prev => ({ ...prev, skippedFiles: prev.skippedFiles + 1 }))
-              console.log(`Skipping large file: ${file.name} (${(file.size / 1024 / 1024).toFixed(1)}MB)`)
+              setProcessingDetails(prev => [...prev, `⏭️ Overgeslagen (te groot): ${file.name} (${(file.size / 1024 / 1024).toFixed(1)}MB)`])
               return null
             }
 
             // Skip certain file types that are definitely not useful
-            const skipExtensions = ['.exe', '.dll', '.zip', '.rar', '.7z', '.tar', '.gz', '.bin', '.iso', '.dmg']
+            const skipExtensions = ['.exe', '.dll', '.zip', '.rar', '.7z', '.tar', '.gz', '.bin', '.iso', '.dmg', '.app', '.deb', '.rpm']
             const fileName = file.name.toLowerCase()
             if (skipExtensions.some(ext => fileName.endsWith(ext))) {
               setIndexingStats(prev => ({ ...prev, skippedFiles: prev.skippedFiles + 1 }))
+              setProcessingDetails(prev => [...prev, `⏭️ Overgeslagen (binair): ${file.name}`])
               return null
             }
 
-            console.log(`Processing file: ${file.name} (${fileType}, ${(file.size / 1024).toFixed(1)}KB)`)
+            setProcessingDetails(prev => [...prev, `🔄 Verwerken: ${file.name} (${fileType}, ${(file.size / 1024).toFixed(1)}KB)`])
 
-            // Get file content with retry mechanism
+            // Get file content with enhanced retry mechanism
             let contentResponse
             let retryCount = 0
-            const maxRetries = 2
+            const maxRetries = 3 // Increased retries
 
             while (retryCount <= maxRetries) {
               try {
@@ -192,30 +199,48 @@ export default function FileIndexer({
                 if (retryCount > maxRetries) {
                   throw fetchError
                 }
-                console.log(`Retry ${retryCount} for file: ${file.name}`)
+                setProcessingDetails(prev => [...prev, `🔄 Retry ${retryCount}/3: ${file.name}`])
                 await new Promise(resolve => setTimeout(resolve, 1000 * retryCount)) // Exponential backoff
               }
             }
 
             if (!contentResponse || !contentResponse.ok) {
-              console.warn(`Failed to get content for ${file.name}: ${contentResponse?.status}`)
               setIndexingStats(prev => ({ ...prev, errors: prev.errors + 1 }))
-              return null
+              setProcessingDetails(prev => [...prev, `❌ Fout: ${file.name} (HTTP ${contentResponse?.status})`])
+              
+              // Create error entry to maintain file record
+              const errorFileIndex = {
+                id: file.id,
+                name: file.name,
+                path: file.path_display,
+                content: `[Fout bij verwerken: ${file.name}]\nHTTP Status: ${contentResponse?.status}\nBestand kon niet worden gedownload maar is geregistreerd voor bestandsnaam-zoekopdrachten.`,
+                size: file.size,
+                modified: file.server_modified,
+                type: fileType
+              }
+              
+              return errorFileIndex
             }
 
             const contentData = await contentResponse.json()
             
             if (contentData.success && contentData.content) {
-              // Update stats based on file type
+              // Update stats based on file type and extraction success
+              const isSuccessful = contentData.extractionSuccess !== false
+              
               setIndexingStats(prev => ({
                 ...prev,
                 textFiles: prev.textFiles + 1,
                 pdfFiles: fileType === 'pdf' ? prev.pdfFiles + 1 : prev.pdfFiles,
                 docxFiles: fileType === 'docx' ? prev.docxFiles + 1 : prev.docxFiles,
-                imageFiles: fileType === 'image' ? prev.imageFiles + 1 : prev.imageFiles
+                imageFiles: fileType === 'image' ? prev.imageFiles + 1 : prev.imageFiles,
+                successfulExtractions: isSuccessful ? prev.successfulExtractions + 1 : prev.successfulExtractions,
+                partialExtractions: !isSuccessful ? prev.partialExtractions + 1 : prev.partialExtractions
               }))
               
-              console.log(`Successfully indexed: ${file.name} (${contentData.content.length} chars)`)
+              const statusIcon = isSuccessful ? '✅' : '⚠️'
+              const extractionInfo = contentData.extractionMethod ? ` (${contentData.extractionMethod})` : ''
+              setProcessingDetails(prev => [...prev, `${statusIcon} Geïndexeerd: ${file.name} - ${contentData.content.length} chars${extractionInfo}`])
               
               const newFileIndex = {
                 id: file.id,
@@ -238,20 +263,33 @@ export default function FileIndexer({
 
               return newFileIndex
             } else {
-              console.log(`No content extracted from: ${file.name}`)
               setIndexingStats(prev => ({ ...prev, skippedFiles: prev.skippedFiles + 1 }))
+              setProcessingDetails(prev => [...prev, `⏭️ Geen inhoud: ${file.name}`])
               return null
             }
           } catch (error) {
             console.error(`Error processing file ${file.name}:`, error)
             setIndexingStats(prev => ({ ...prev, errors: prev.errors + 1 }))
-            return null
+            setProcessingDetails(prev => [...prev, `❌ Fout: ${file.name} - ${error instanceof Error ? error.message : 'Onbekende fout'}`])
+            
+            // Create error entry to maintain file record
+            const errorFileIndex = {
+              id: file.id || `error_${Date.now()}`,
+              name: file.name,
+              path: file.path_display,
+              content: `[Verwerkingsfout: ${file.name}]\nFout: ${error instanceof Error ? error.message : 'Onbekende fout'}\nBestand is geregistreerd voor bestandsnaam-zoekopdrachten.`,
+              size: file.size,
+              modified: file.server_modified,
+              type: getFileType(file.name)
+            }
+            
+            return errorFileIndex
           }
         })
 
         const batchResults = await Promise.all(batchPromises)
         
-        // Add successful results to index
+        // Add all results to index (including error entries)
         batchResults.forEach(result => {
           if (result) {
             fileIndex.push(result)
@@ -265,17 +303,30 @@ export default function FileIndexer({
         const totalIndexed = fileIndex.length
         const newlyProcessed = resetFromZero ? totalIndexed : processed
         
-        setIndexingStatus(`Verwerkt: ${processed}/${filesToProcess.length} ${resetFromZero ? 'bestanden' : 'nieuwe bestanden'} (${totalIndexed} totaal geïndexeerd)`)
+        setIndexingStatus(`🔄 Verwerkt: ${processed}/${filesToProcess.length} ${resetFromZero ? 'bestanden' : 'nieuwe bestanden'} (${totalIndexed} totaal geïndexeerd)`)
 
-        // Longer delay between batches to prevent rate limiting
-        await new Promise(resolve => setTimeout(resolve, 500))
+        // Longer delay between batches to prevent rate limiting and allow processing
+        await new Promise(resolve => setTimeout(resolve, 800))
       }
 
       const successMessage = resetFromZero 
-        ? `Volledige herindexering voltooid! ${fileIndex.length} bestanden geïndexeerd van ${allFiles.length} totaal.`
-        : `Incrementele update voltooid! ${processed} nieuwe/gewijzigde bestanden verwerkt. Totaal: ${fileIndex.length} bestanden.`
+        ? `🎉 Volledige herindexering voltooid! ${fileIndex.length} bestanden geïndexeerd van ${allFiles.length} totaal.`
+        : `🎉 Incrementele update voltooid! ${processed} nieuwe/gewijzigde bestanden verwerkt. Totaal: ${fileIndex.length} bestanden.`
       
       setIndexingStatus(successMessage)
+      
+      // Add final summary to processing details
+      setProcessingDetails(prev => [
+        ...prev,
+        '',
+        '📊 SAMENVATTING:',
+        `✅ Succesvol: ${indexingStats.successfulExtractions + 1} bestanden`,
+        `⚠️ Gedeeltelijk: ${indexingStats.partialExtractions} bestanden`,
+        `❌ Fouten: ${indexingStats.errors} bestanden`,
+        `⏭️ Overgeslagen: ${indexingStats.skippedFiles} bestanden`,
+        `📁 Totaal geïndexeerd: ${fileIndex.length} bestanden`
+      ])
+      
       console.log(successMessage)
       onIndexComplete(fileIndex)
 
@@ -303,20 +354,29 @@ export default function FileIndexer({
   const getFileType = (filename: string): 'text' | 'pdf' | 'docx' | 'image' | 'other' => {
     const ext = filename.toLowerCase().split('.').pop() || ''
     
-    // Text files - expanded list
+    // Expanded text files list for comprehensive coverage
     if ([
+      // Programming and markup
       'txt', 'md', 'csv', 'json', 'js', 'ts', 'jsx', 'tsx', 'html', 'htm', 'css', 'scss', 'sass', 'less',
       'py', 'java', 'cpp', 'c', 'h', 'hpp', 'php', 'rb', 'go', 'rs', 'swift', 'kt', 'scala', 
       'sh', 'bat', 'ps1', 'xml', 'yaml', 'yml', 'ini', 'cfg', 'conf', 'log', 'sql',
+      // Scientific and academic
       'r', 'matlab', 'm', 'pl', 'pm', 'tcl', 'vb', 'vbs', 'asm', 'f', 'f90', 'f95',
-      'tex', 'bib', 'rtf', 'org', 'rst', 'wiki', 'adoc', 'asciidoc'
+      'tex', 'bib', 'rtf', 'org', 'rst', 'wiki', 'adoc', 'asciidoc',
+      // Data and config
+      'properties', 'env', 'gitignore', 'dockerfile', 'makefile', 'cmake', 'gradle',
+      'toml', 'lock', 'manifest', 'plist', 'reg', 'inf',
+      // Documentation
+      'readme', 'changelog', 'license', 'authors', 'contributors', 'todo',
+      // Other text formats
+      'srt', 'vtt', 'sub', 'ass', 'ssa', 'lrc', 'ttml'
     ].includes(ext)) {
       return 'text'
     }
     
     if (ext === 'pdf') return 'pdf'
-    if (['docx', 'doc'].includes(ext)) return 'docx'
-    if (['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg', 'tiff', 'tif'].includes(ext)) return 'image'
+    if (['docx', 'doc', 'odt', 'pages'].includes(ext)) return 'docx'
+    if (['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg', 'tiff', 'tif', 'ico', 'heic', 'heif'].includes(ext)) return 'image'
     
     return 'other'
   }
@@ -327,7 +387,7 @@ export default function FileIndexer({
         <span className="w-8 h-8 bg-blue-100 rounded-lg flex items-center justify-center mr-3">
           📁
         </span>
-        Bestanden Indexeren
+        Grondige Bestanden Indexering
       </h2>
 
       <div className="space-y-6">
@@ -365,19 +425,19 @@ export default function FileIndexer({
                   <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
                   </svg>
-                  {existingIndex.length > 0 ? 'Update Index' : 'Start Indexering'}
+                  {existingIndex.length > 0 ? 'Update Index' : 'Start Grondige Indexering'}
                 </button>
 
                 {/* Reset Button */}
                 <button
                   onClick={handleResetClick}
                   className="px-6 py-3 bg-orange-600 text-white rounded-lg hover:bg-orange-700 transition-colors flex items-center"
-                  title="Reset en herindexeer alle bestanden"
+                  title="Reset en herindexeer alle bestanden grondig"
                 >
                   <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
                   </svg>
-                  Reset & Herindexeer
+                  Volledige Reset
                 </button>
               </>
             ) : (
@@ -423,8 +483,8 @@ export default function FileIndexer({
                     <span className="font-semibold text-red-800">Volledig Opnieuw Beginnen</span>
                   </div>
                   <p className="text-sm text-red-700 ml-9">
-                    Wis alle bestaande data en indexeer alle {existingIndex.length} bestanden opnieuw. 
-                    Dit duurt langer maar zorgt voor een volledig frisse start.
+                    Wis alle bestaande data en indexeer alle bestanden grondig opnieuw. 
+                    Dit duurt langer maar zorgt voor maximale dekking en kwaliteit.
                   </p>
                 </button>
 
@@ -441,7 +501,7 @@ export default function FileIndexer({
                   </div>
                   <p className="text-sm text-green-700 ml-9">
                     Behoud bestaande data en voeg alleen nieuwe of gewijzigde bestanden toe. 
-                    Dit is sneller en efficiënter.
+                    Sneller en efficiënter voor regelmatige updates.
                   </p>
                 </button>
               </div>
@@ -462,9 +522,9 @@ export default function FileIndexer({
         {/* Progress Bar */}
         {isIndexing && (
           <div className="space-y-4">
-            <div className="bg-gray-200 rounded-full h-3 overflow-hidden">
+            <div className="bg-gray-200 rounded-full h-4 overflow-hidden">
               <div 
-                className="bg-blue-600 h-full transition-all duration-300 ease-out"
+                className="bg-gradient-to-r from-blue-500 to-green-500 h-full transition-all duration-300 ease-out"
                 style={{ 
                   width: indexingProgress.total > 0 
                     ? `${(indexingProgress.current / indexingProgress.total) * 100}%` 
@@ -489,7 +549,7 @@ export default function FileIndexer({
 
         {/* Enhanced Indexing Stats */}
         {isIndexing && indexingStats.totalFiles > 0 && (
-          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3">
+          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-3">
             <div className="bg-blue-50 p-3 rounded-lg text-center">
               <div className="text-xl font-bold text-blue-600">{indexingStats.totalFiles}</div>
               <div className="text-xs text-blue-700">Totaal</div>
@@ -498,9 +558,13 @@ export default function FileIndexer({
               <div className="text-xl font-bold text-green-600">{indexingStats.processedFiles}</div>
               <div className="text-xs text-green-700">Verwerkt</div>
             </div>
-            <div className="bg-purple-50 p-3 rounded-lg text-center">
-              <div className="text-xl font-bold text-purple-600">{indexingStats.textFiles}</div>
-              <div className="text-xs text-purple-700">Geïndexeerd</div>
+            <div className="bg-emerald-50 p-3 rounded-lg text-center">
+              <div className="text-xl font-bold text-emerald-600">{indexingStats.successfulExtractions}</div>
+              <div className="text-xs text-emerald-700">Succesvol</div>
+            </div>
+            <div className="bg-amber-50 p-3 rounded-lg text-center">
+              <div className="text-xl font-bold text-amber-600">{indexingStats.partialExtractions}</div>
+              <div className="text-xs text-amber-700">Gedeeltelijk</div>
             </div>
             <div className="bg-red-50 p-3 rounded-lg text-center">
               <div className="text-xl font-bold text-red-600">{indexingStats.pdfFiles}</div>
@@ -510,13 +574,27 @@ export default function FileIndexer({
               <div className="text-xl font-bold text-indigo-600">{indexingStats.docxFiles}</div>
               <div className="text-xs text-indigo-700">Word</div>
             </div>
-            <div className="bg-yellow-50 p-3 rounded-lg text-center">
-              <div className="text-xl font-bold text-yellow-600">{indexingStats.skippedFiles}</div>
-              <div className="text-xs text-yellow-700">Overgeslagen</div>
+            <div className="bg-purple-50 p-3 rounded-lg text-center">
+              <div className="text-xl font-bold text-purple-600">{indexingStats.imageFiles}</div>
+              <div className="text-xs text-purple-700">Afbeeldingen</div>
             </div>
             <div className="bg-gray-50 p-3 rounded-lg text-center">
               <div className="text-xl font-bold text-gray-600">{indexingStats.errors}</div>
               <div className="text-xs text-gray-700">Fouten</div>
+            </div>
+          </div>
+        )}
+
+        {/* Real-time Processing Details */}
+        {isIndexing && processingDetails.length > 0 && (
+          <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
+            <h4 className="text-sm font-medium text-gray-800 mb-3">🔄 Live Verwerkingsdetails:</h4>
+            <div className="max-h-40 overflow-y-auto text-xs text-gray-600 space-y-1 font-mono">
+              {processingDetails.slice(-20).map((detail, index) => (
+                <div key={index} className="whitespace-nowrap">
+                  {detail}
+                </div>
+              ))}
             </div>
           </div>
         )}
@@ -533,50 +611,61 @@ export default function FileIndexer({
           </div>
         )}
 
-        {/* Enhanced Info with Smart Indexing Explanation */}
-        <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
-          <h4 className="text-sm font-medium text-gray-800 mb-3">🚀 Slimme Indexering Features:</h4>
+        {/* Enhanced Info with Comprehensive Coverage Details */}
+        <div className="bg-gradient-to-r from-blue-50 to-green-50 border border-blue-200 rounded-lg p-6">
+          <h4 className="text-lg font-bold text-blue-800 mb-4">🚀 Grondige Indexering - Maximale Dekking</h4>
           
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-            <div className="bg-green-50 border border-green-200 rounded-lg p-3">
-              <h5 className="text-sm font-semibold text-green-800 mb-2">⚡ Update Index (Aanbevolen)</h5>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+            <div className="bg-white border border-green-200 rounded-lg p-4">
+              <h5 className="text-sm font-semibold text-green-800 mb-3">✅ Wat wordt VOLLEDIG geïndexeerd:</h5>
               <ul className="text-xs text-green-700 space-y-1">
-                <li>• Behoudt bestaande geïndexeerde bestanden</li>
-                <li>• Voegt alleen nieuwe bestanden toe</li>
-                <li>• Update gewijzigde bestanden automatisch</li>
-                <li>• Veel sneller dan volledig herindexeren</li>
+                <li>• <strong>Alle tekstbestanden:</strong> .txt, .md, .csv, .json, .js, .ts, .html, .css, .py, .java, .cpp, .php, .rb, .go, .rs, .swift, .kt, .scala, .sh, .bat, .xml, .yaml, .ini, .log, .sql en 50+ andere formaten</li>
+                <li>• <strong>PDF documenten:</strong> Tekst extractie met metadata (titel, auteur, pagina's)</li>
+                <li>• <strong>Word documenten:</strong> .docx, .doc met volledige tekstinhoud</li>
+                <li>• <strong>Afbeeldingen:</strong> Bestandsinfo (voorbereid voor OCR)</li>
+                <li>• <strong>Configuratiebestanden:</strong> .env, .config, .properties, .ini</li>
+                <li>• <strong>Data bestanden:</strong> .csv, .json, .xml met structuur</li>
               </ul>
             </div>
             
-            <div className="bg-orange-50 border border-orange-200 rounded-lg p-3">
-              <h5 className="text-sm font-semibold text-orange-800 mb-2">🔄 Reset & Herindexeer</h5>
+            <div className="bg-white border border-orange-200 rounded-lg p-4">
+              <h5 className="text-sm font-semibold text-orange-800 mb-3">🛡️ Robuuste Foutafhandeling:</h5>
               <ul className="text-xs text-orange-700 space-y-1">
-                <li>• Wist alle bestaande index data</li>
-                <li>• Indexeert alle bestanden opnieuw</li>
-                <li>• Gebruik bij problemen met de index</li>
-                <li>• Duurt langer maar geeft frisse start</li>
+                <li>• <strong>PDF fouten:</strong> Automatische fallback naar alternatieve extractie</li>
+                <li>• <strong>Beschadigde bestanden:</strong> Worden geregistreerd voor bestandsnaam-zoeken</li>
+                <li>• <strong>Netwerkfouten:</strong> Automatische retry met exponential backoff</li>
+                <li>• <strong>Grote bestanden:</strong> Intelligente truncatie op zinsgrenzen</li>
+                <li>• <strong>Encoding problemen:</strong> Meerdere encoding pogingen (UTF-8, Latin1)</li>
+                <li>• <strong>API limieten:</strong> Respectvolle rate limiting</li>
               </ul>
             </div>
           </div>
 
-          <div className="text-sm text-gray-600 space-y-2">
-            <p><strong>📄 Ondersteunde formaten:</strong> .txt, .md, .csv, .json, .js, .ts, .html, .css, .py, .java, .cpp, .php, .rb, .go, .rs, .swift, .kt, .scala, .sh, .bat, .xml, .yaml, .ini, .log, .sql en veel meer</p>
-            <p><strong>📕 PDF:</strong> Verbeterde PDF parsing met betere foutafhandeling en metadata extractie</p>
-            <p><strong>📘 Word:</strong> .docx, .doc met uitgebreide foutdetectie</p>
-            <p><strong>🖼️ Afbeeldingen:</strong> .jpg, .jpeg, .png, .gif, .bmp, .webp, .svg (voorbereid voor OCR)</p>
-            
-            <div className="mt-3 p-3 bg-blue-50 rounded border border-blue-200">
-              <p className="text-xs text-blue-700 font-medium">🔧 Technische verbeteringen:</p>
-              <ul className="text-xs text-blue-600 mt-1 space-y-1">
-                <li>• Incrementele updates - alleen nieuwe/gewijzigde bestanden</li>
-                <li>• Robuuste PDF parsing die testbestand-fouten voorkomt</li>
-                <li>• Betere foutafhandeling voor beschadigde bestanden</li>
-                <li>• Uitgebreide metadata extractie</li>
-                <li>• Verhoogde bestandsgrootte limiet (25MB)</li>
-                <li>• Retry mechanisme voor netwerkfouten</li>
-                <li>• Gedetailleerde voortgangsrapportage</li>
+          <div className="bg-white border border-blue-200 rounded-lg p-4">
+            <h5 className="text-sm font-semibold text-blue-800 mb-3">🔧 Technische Verbeteringen:</h5>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <ul className="text-xs text-blue-700 space-y-1">
+                <li>• <strong>Incrementele updates:</strong> Alleen nieuwe/gewijzigde bestanden</li>
+                <li>• <strong>Robuuste PDF parsing:</strong> Voorkomt testbestand-fouten</li>
+                <li>• <strong>Uitgebreide metadata:</strong> Titel, auteur, datum, pagina's</li>
+                <li>• <strong>Slimme content cleaning:</strong> Verwijdert problematische karakters</li>
+              </ul>
+              <ul className="text-xs text-blue-700 space-y-1">
+                <li>• <strong>Verhoogde limieten:</strong> Tot 50MB bestanden, 200KB tekst</li>
+                <li>• <strong>Retry mechanisme:</strong> 3 pogingen met exponential backoff</li>
+                <li>• <strong>Live monitoring:</strong> Real-time voortgang en details</li>
+                <li>• <strong>Fout continuïteit:</strong> Eén fout stopt niet de hele indexering</li>
               </ul>
             </div>
+          </div>
+
+          <div className="mt-4 p-3 bg-yellow-50 rounded border border-yellow-200">
+            <p className="text-xs text-yellow-800 font-medium">💡 Pro Tip:</p>
+            <p className="text-xs text-yellow-700 mt-1">
+              Deze verbeterde indexering zorgt ervoor dat ALLE tekstuele inhoud in je bestanden doorzoekbaar wordt, 
+              inclusief metadata en gedeeltelijke inhoud van problematische bestanden. Zelfs als een bestand niet 
+              volledig kan worden gelezen, wordt het geregistreerd voor bestandsnaam-gebaseerde zoekopdrachten.
+            </p>
           </div>
         </div>
       </div>
