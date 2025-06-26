@@ -10,7 +10,7 @@ async function initializePdfParse() {
   if (!pdfParseInitialized) {
     try {
       // Import pdfjs-dist and configure for serverless environment
-      const pdfjs = await import('pdfjs-dist/build/pdf')
+      const pdfjs = await import('pdfjs-dist/legacy/build/pdf.js')
       
       // Disable worker completely to prevent file system access
       pdfjs.GlobalWorkerOptions.workerSrc = null
