@@ -43,9 +43,29 @@ export default function FileIndexer({
     docxFiles: 0,
     imageFiles: 0
   })
+  const [showResetOptions, setShowResetOptions] = useState(false)
   const abortControllerRef = useRef<AbortController | null>(null)
 
-  const startIndexing = async () => {
+  const handleResetClick = () => {
+    if (existingIndex.length > 0) {
+      setShowResetOptions(true)
+    } else {
+      startIndexing(true) // Fresh start if no existing index
+    }
+  }
+
+  const handleResetChoice = (resetFromZero: boolean) => {
+    setShowResetOptions(false)
+    if (resetFromZero) {
+      // Clear existing index and start fresh
+      onIndexComplete([])
+      localStorage.removeItem('dropbox_file_index')
+      localStorage.removeItem('dropbox_last_indexed')
+    }
+    startIndexing(resetFromZero)
+  }
+
+  const startIndexing = async (resetFromZero: boolean = false) => {
     setIsIndexing(true)
     setIndexingError('')
     setIndexingStatus('Bestanden ophalen van Dropbox...')
@@ -81,19 +101,52 @@ export default function FileIndexer({
       
       setIndexingStats(prev => ({ ...prev, totalFiles: allFiles.length }))
       onIndexProgress(0, allFiles.length)
-      setIndexingStatus(`${allFiles.length} bestanden gevonden. Inhoud indexeren...`)
 
-      const fileIndex: FileIndex[] = []
+      // Determine which files to process
+      let filesToProcess = allFiles
+      let existingFileMap = new Map<string, FileIndex>()
+
+      if (!resetFromZero && existingIndex.length > 0) {
+        // Create map of existing files for quick lookup
+        existingIndex.forEach(file => {
+          existingFileMap.set(file.path, file)
+        })
+
+        // Filter out files that haven't changed
+        filesToProcess = allFiles.filter((file: any) => {
+          const existing = existingFileMap.get(file.path_display)
+          if (!existing) return true // New file
+          
+          // Check if file was modified
+          const fileModified = new Date(file.server_modified)
+          const existingModified = new Date(existing.modified)
+          return fileModified > existingModified
+        })
+
+        setIndexingStatus(`${allFiles.length} bestanden gevonden. ${filesToProcess.length} nieuwe/gewijzigde bestanden te verwerken...`)
+      } else {
+        setIndexingStatus(`${allFiles.length} bestanden gevonden. Alle bestanden indexeren...`)
+      }
+
+      const fileIndex: FileIndex[] = resetFromZero ? [] : [...existingIndex]
       let processed = 0
+
+      // If no new files to process
+      if (filesToProcess.length === 0) {
+        setIndexingStatus(`Geen nieuwe bestanden gevonden. Index is up-to-date met ${existingIndex.length} bestanden.`)
+        onIndexComplete(existingIndex)
+        setIsIndexing(false)
+        return
+      }
 
       // Process files in smaller batches to avoid overwhelming the API
       const batchSize = 3 // Reduced from 5 to be more gentle on the API
-      for (let i = 0; i < allFiles.length; i += batchSize) {
+      for (let i = 0; i < filesToProcess.length; i += batchSize) {
         if (abortControllerRef.current?.signal.aborted) {
           throw new Error('Indexering geannuleerd')
         }
 
-        const batch = allFiles.slice(i, i + batchSize)
+        const batch = filesToProcess.slice(i, i + batchSize)
         const batchPromises = batch.map(async (file: any) => {
           try {
             // Determine file type
@@ -164,7 +217,7 @@ export default function FileIndexer({
               
               console.log(`Successfully indexed: ${file.name} (${contentData.content.length} chars)`)
               
-              return {
+              const newFileIndex = {
                 id: file.id,
                 name: file.name,
                 path: file.path_display,
@@ -173,6 +226,17 @@ export default function FileIndexer({
                 modified: file.server_modified,
                 type: fileType
               }
+
+              // If updating existing file, remove old version
+              if (!resetFromZero) {
+                const existingIndex = fileIndex.findIndex(f => f.path === file.path_display)
+                if (existingIndex !== -1) {
+                  fileIndex[existingIndex] = newFileIndex
+                  return null // Don't add duplicate
+                }
+              }
+
+              return newFileIndex
             } else {
               console.log(`No content extracted from: ${file.name}`)
               setIndexingStats(prev => ({ ...prev, skippedFiles: prev.skippedFiles + 1 }))
@@ -196,14 +260,21 @@ export default function FileIndexer({
 
         processed += batch.length
         setIndexingStats(prev => ({ ...prev, processedFiles: processed }))
-        onIndexProgress(processed, allFiles.length)
-        setIndexingStatus(`Verwerkt: ${processed}/${allFiles.length} bestanden (${fileIndex.length} geïndexeerd)`)
+        onIndexProgress(processed, filesToProcess.length)
+        
+        const totalIndexed = fileIndex.length
+        const newlyProcessed = resetFromZero ? totalIndexed : processed
+        
+        setIndexingStatus(`Verwerkt: ${processed}/${filesToProcess.length} ${resetFromZero ? 'bestanden' : 'nieuwe bestanden'} (${totalIndexed} totaal geïndexeerd)`)
 
         // Longer delay between batches to prevent rate limiting
         await new Promise(resolve => setTimeout(resolve, 500))
       }
 
-      const successMessage = `Indexering voltooid! ${fileIndex.length} bestanden geïndexeerd van ${allFiles.length} totaal.`
+      const successMessage = resetFromZero 
+        ? `Volledige herindexering voltooid! ${fileIndex.length} bestanden geïndexeerd van ${allFiles.length} totaal.`
+        : `Incrementele update voltooid! ${processed} nieuwe/gewijzigde bestanden verwerkt. Totaal: ${fileIndex.length} bestanden.`
+      
       setIndexingStatus(successMessage)
       console.log(successMessage)
       onIndexComplete(fileIndex)
@@ -260,11 +331,11 @@ export default function FileIndexer({
       </h2>
 
       <div className="space-y-6">
-        {/* Current Status */}
+        {/* Current Status with Enhanced Reset Options */}
         <div className="flex items-center justify-between">
           <div>
             <h3 className="text-lg font-semibold text-gray-800">
-              {existingIndex.length > 0 ? 'Herindexeren' : 'Eerste Indexering'}
+              {existingIndex.length > 0 ? 'Bestaande Index' : 'Eerste Indexering'}
             </h3>
             <p className="text-sm text-gray-600">
               {existingIndex.length > 0 
@@ -272,19 +343,43 @@ export default function FileIndexer({
                 : 'Nog geen bestanden geïndexeerd'
               }
             </p>
+            {existingIndex.length > 0 && (
+              <p className="text-xs text-gray-500 mt-1">
+                Laatst bijgewerkt: {localStorage.getItem('dropbox_last_indexed') 
+                  ? new Date(localStorage.getItem('dropbox_last_indexed')!).toLocaleString('nl-NL')
+                  : 'Onbekend'
+                }
+              </p>
+            )}
           </div>
           
           <div className="flex items-center space-x-3">
             {!isIndexing ? (
-              <button
-                onClick={startIndexing}
-                className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors flex items-center"
-              >
-                <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                </svg>
-                {existingIndex.length > 0 ? 'Herindexeren' : 'Start Indexering'}
-              </button>
+              <>
+                {/* Smart Indexing Button */}
+                <button
+                  onClick={() => startIndexing(false)}
+                  className="px-6 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors flex items-center"
+                  title={existingIndex.length > 0 ? "Zoek alleen naar nieuwe en gewijzigde bestanden" : "Start eerste indexering"}
+                >
+                  <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                  </svg>
+                  {existingIndex.length > 0 ? 'Update Index' : 'Start Indexering'}
+                </button>
+
+                {/* Reset Button */}
+                <button
+                  onClick={handleResetClick}
+                  className="px-6 py-3 bg-orange-600 text-white rounded-lg hover:bg-orange-700 transition-colors flex items-center"
+                  title="Reset en herindexeer alle bestanden"
+                >
+                  <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                  </svg>
+                  Reset & Herindexeer
+                </button>
+              </>
             ) : (
               <button
                 onClick={stopIndexing}
@@ -299,6 +394,70 @@ export default function FileIndexer({
             )}
           </div>
         </div>
+
+        {/* Reset Options Modal */}
+        {showResetOptions && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+            <div className="bg-white rounded-xl p-8 max-w-md w-full mx-4 shadow-2xl">
+              <h3 className="text-xl font-bold text-gray-800 mb-4 flex items-center">
+                <span className="w-8 h-8 bg-orange-100 rounded-lg flex items-center justify-center mr-3">
+                  🔄
+                </span>
+                Indexering Opties
+              </h3>
+              
+              <p className="text-gray-600 mb-6">
+                Je hebt al {existingIndex.length} bestanden geïndexeerd. Hoe wil je doorgaan?
+              </p>
+
+              <div className="space-y-4">
+                {/* Option 1: Fresh Start */}
+                <button
+                  onClick={() => handleResetChoice(true)}
+                  className="w-full p-4 bg-red-50 border-2 border-red-200 rounded-lg hover:bg-red-100 transition-colors text-left"
+                >
+                  <div className="flex items-center mb-2">
+                    <span className="w-6 h-6 bg-red-600 rounded-full flex items-center justify-center mr-3">
+                      <span className="text-white text-sm">🗑️</span>
+                    </span>
+                    <span className="font-semibold text-red-800">Volledig Opnieuw Beginnen</span>
+                  </div>
+                  <p className="text-sm text-red-700 ml-9">
+                    Wis alle bestaande data en indexeer alle {existingIndex.length} bestanden opnieuw. 
+                    Dit duurt langer maar zorgt voor een volledig frisse start.
+                  </p>
+                </button>
+
+                {/* Option 2: Smart Update */}
+                <button
+                  onClick={() => handleResetChoice(false)}
+                  className="w-full p-4 bg-green-50 border-2 border-green-200 rounded-lg hover:bg-green-100 transition-colors text-left"
+                >
+                  <div className="flex items-center mb-2">
+                    <span className="w-6 h-6 bg-green-600 rounded-full flex items-center justify-center mr-3">
+                      <span className="text-white text-sm">⚡</span>
+                    </span>
+                    <span className="font-semibold text-green-800">Slimme Update (Aanbevolen)</span>
+                  </div>
+                  <p className="text-sm text-green-700 ml-9">
+                    Behoud bestaande data en voeg alleen nieuwe of gewijzigde bestanden toe. 
+                    Dit is sneller en efficiënter.
+                  </p>
+                </button>
+              </div>
+
+              {/* Cancel Button */}
+              <div className="mt-6 flex justify-center">
+                <button
+                  onClick={() => setShowResetOptions(false)}
+                  className="px-6 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors"
+                >
+                  Annuleren
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Progress Bar */}
         {isIndexing && (
@@ -374,17 +533,42 @@ export default function FileIndexer({
           </div>
         )}
 
-        {/* Enhanced Info */}
+        {/* Enhanced Info with Smart Indexing Explanation */}
         <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
-          <h4 className="text-sm font-medium text-gray-800 mb-2">✨ Verbeterde bestandsondersteuning:</h4>
+          <h4 className="text-sm font-medium text-gray-800 mb-3">🚀 Slimme Indexering Features:</h4>
+          
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+            <div className="bg-green-50 border border-green-200 rounded-lg p-3">
+              <h5 className="text-sm font-semibold text-green-800 mb-2">⚡ Update Index (Aanbevolen)</h5>
+              <ul className="text-xs text-green-700 space-y-1">
+                <li>• Behoudt bestaande geïndexeerde bestanden</li>
+                <li>• Voegt alleen nieuwe bestanden toe</li>
+                <li>• Update gewijzigde bestanden automatisch</li>
+                <li>• Veel sneller dan volledig herindexeren</li>
+              </ul>
+            </div>
+            
+            <div className="bg-orange-50 border border-orange-200 rounded-lg p-3">
+              <h5 className="text-sm font-semibold text-orange-800 mb-2">🔄 Reset & Herindexeer</h5>
+              <ul className="text-xs text-orange-700 space-y-1">
+                <li>• Wist alle bestaande index data</li>
+                <li>• Indexeert alle bestanden opnieuw</li>
+                <li>• Gebruik bij problemen met de index</li>
+                <li>• Duurt langer maar geeft frisse start</li>
+              </ul>
+            </div>
+          </div>
+
           <div className="text-sm text-gray-600 space-y-2">
-            <p><strong>📄 Tekst:</strong> .txt, .md, .csv, .json, .js, .ts, .html, .css, .py, .java, .cpp, .php, .rb, .go, .rs, .swift, .kt, .scala, .sh, .bat, .xml, .yaml, .ini, .log, .sql en veel meer</p>
+            <p><strong>📄 Ondersteunde formaten:</strong> .txt, .md, .csv, .json, .js, .ts, .html, .css, .py, .java, .cpp, .php, .rb, .go, .rs, .swift, .kt, .scala, .sh, .bat, .xml, .yaml, .ini, .log, .sql en veel meer</p>
             <p><strong>📕 PDF:</strong> Verbeterde PDF parsing met betere foutafhandeling en metadata extractie</p>
             <p><strong>📘 Word:</strong> .docx, .doc met uitgebreide foutdetectie</p>
             <p><strong>🖼️ Afbeeldingen:</strong> .jpg, .jpeg, .png, .gif, .bmp, .webp, .svg (voorbereid voor OCR)</p>
+            
             <div className="mt-3 p-3 bg-blue-50 rounded border border-blue-200">
               <p className="text-xs text-blue-700 font-medium">🔧 Technische verbeteringen:</p>
               <ul className="text-xs text-blue-600 mt-1 space-y-1">
+                <li>• Incrementele updates - alleen nieuwe/gewijzigde bestanden</li>
                 <li>• Robuuste PDF parsing die testbestand-fouten voorkomt</li>
                 <li>• Betere foutafhandeling voor beschadigde bestanden</li>
                 <li>• Uitgebreide metadata extractie</li>
