@@ -1,52 +1,37 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
 import DropboxAuth from './DropboxAuth'
-import FileIndexer from './FileIndexer'
-import SearchInterface from './SearchInterface'
+import PDFLoader from './PDFLoader'
+import PDFChatInterface from './PDFChatInterface'
 import APITester from './APITester'
 
-interface FileIndex {
+interface PDFFile {
   id: string
   name: string
   path: string
-  content: string
   size: number
   modified: string
-  type: 'text' | 'pdf' | 'docx' | 'image' | 'other'
+  content?: string
+  isLoaded: boolean
+  loadError?: string
 }
 
 export default function DropboxAISearch() {
   const [accessToken, setAccessToken] = useState<string>('')
   const [isAuthenticated, setIsAuthenticated] = useState(false)
-  const [fileIndex, setFileIndex] = useState<FileIndex[]>([])
-  const [isIndexing, setIsIndexing] = useState(false)
-  const [indexingProgress, setIndexingProgress] = useState({ current: 0, total: 0 })
+  const [pdfFiles, setPdfFiles] = useState<PDFFile[]>([])
+  const [isLoadingPDFs, setIsLoadingPDFs] = useState(false)
   const [showTester, setShowTester] = useState(false)
-  const [lastIndexed, setLastIndexed] = useState<Date | null>(null)
+  const [lastLoaded, setLastLoaded] = useState<Date | null>(null)
 
   // Check for stored access token on mount
   useEffect(() => {
     const storedToken = localStorage.getItem('dropbox_access_token')
-    const storedIndex = localStorage.getItem('dropbox_file_index')
-    const storedLastIndexed = localStorage.getItem('dropbox_last_indexed')
     
     if (storedToken) {
       setAccessToken(storedToken)
       setIsAuthenticated(true)
-    }
-    
-    if (storedIndex) {
-      try {
-        const parsedIndex = JSON.parse(storedIndex)
-        setFileIndex(parsedIndex)
-      } catch (error) {
-        console.error('Error parsing stored file index:', error)
-      }
-    }
-    
-    if (storedLastIndexed) {
-      setLastIndexed(new Date(storedLastIndexed))
     }
   }, [])
 
@@ -59,23 +44,15 @@ export default function DropboxAISearch() {
   const handleLogout = () => {
     setAccessToken('')
     setIsAuthenticated(false)
-    setFileIndex([])
-    setLastIndexed(null)
+    setPdfFiles([])
+    setLastLoaded(null)
     localStorage.removeItem('dropbox_access_token')
-    localStorage.removeItem('dropbox_file_index')
-    localStorage.removeItem('dropbox_last_indexed')
   }
 
-  const handleIndexComplete = (index: FileIndex[]) => {
-    setFileIndex(index)
+  const handlePDFsLoaded = (pdfs: PDFFile[]) => {
+    setPdfFiles(pdfs)
     const now = new Date()
-    setLastIndexed(now)
-    localStorage.setItem('dropbox_file_index', JSON.stringify(index))
-    localStorage.setItem('dropbox_last_indexed', now.toISOString())
-  }
-
-  const handleIndexProgress = (current: number, total: number) => {
-    setIndexingProgress({ current, total })
+    setLastLoaded(now)
   }
 
   if (!isAuthenticated) {
@@ -125,11 +102,11 @@ export default function DropboxAISearch() {
             <div>
               <h3 className="text-lg font-semibold text-gray-800">Dropbox Verbonden</h3>
               <p className="text-sm text-gray-600">
-                {fileIndex.length > 0 ? `${fileIndex.length} bestanden geïndexeerd` : 'Klaar om bestanden te indexeren'}
+                {pdfFiles.length > 0 ? `${pdfFiles.length} PDF bestanden beschikbaar` : 'Klaar om PDF bestanden te laden'}
               </p>
-              {lastIndexed && (
+              {lastLoaded && (
                 <p className="text-xs text-gray-500">
-                  Laatst geïndexeerd: {lastIndexed.toLocaleString('nl-NL')}
+                  Laatst geladen: {lastLoaded.toLocaleString('nl-NL')}
                 </p>
               )}
             </div>
@@ -165,21 +142,19 @@ export default function DropboxAISearch() {
         </div>
       )}
 
-      {/* File Indexer */}
-      <FileIndexer
+      {/* PDF Loader */}
+      <PDFLoader
         accessToken={accessToken}
-        onIndexComplete={handleIndexComplete}
-        onIndexProgress={handleIndexProgress}
-        isIndexing={isIndexing}
-        setIsIndexing={setIsIndexing}
-        indexingProgress={indexingProgress}
-        existingIndex={fileIndex}
+        onPDFsLoaded={handlePDFsLoaded}
+        isLoading={isLoadingPDFs}
+        setIsLoading={setIsLoadingPDFs}
+        existingPDFs={pdfFiles}
       />
 
-      {/* Search Interface */}
-      {fileIndex.length > 0 && (
-        <SearchInterface
-          fileIndex={fileIndex}
+      {/* PDF Chat Interface */}
+      {pdfFiles.length > 0 && (
+        <PDFChatInterface
+          pdfFiles={pdfFiles}
           accessToken={accessToken}
         />
       )}
