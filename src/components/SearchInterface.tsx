@@ -31,6 +31,7 @@ export default function SearchInterface({ fileIndex, accessToken }: SearchInterf
   const [aiResponse, setAiResponse] = useState('')
   const [isStreaming, setIsStreaming] = useState(false)
   const [searchStats, setSearchStats] = useState({ filesSearched: 0, totalFiles: 0, searchTime: 0 })
+  const [searchMode, setSearchMode] = useState<'search' | 'ask'>('search') // New state for mode
   const abortControllerRef = useRef<AbortController | null>(null)
 
   const performSearch = async () => {
@@ -84,6 +85,26 @@ export default function SearchInterface({ fileIndex, accessToken }: SearchInterf
     }
   }
 
+  const askAI = async () => {
+    if (!query.trim()) return
+
+    setIsSearching(true)
+    setSearchResults([]) // Clear search results for direct AI mode
+    setAiResponse('')
+    setIsStreaming(false)
+    setSearchStats({ filesSearched: 0, totalFiles: 0, searchTime: 0 }) // Clear search stats
+
+    try {
+      // Direct AI question without file search
+      await generateDirectAIResponse(query)
+    } catch (error) {
+      console.error('AI ask error:', error)
+      setAiResponse('Er is een fout opgetreden bij het stellen van je vraag: ' + (error instanceof Error ? error.message : 'Onbekende fout'))
+    } finally {
+      setIsSearching(false)
+    }
+  }
+
   const generateAIResponse = async (query: string, results: SearchResult[]) => {
     setIsStreaming(true)
     setAiResponse('')
@@ -115,51 +136,7 @@ Geef een uitgebreid en nuttig antwoord gebaseerd op de inhoud van deze bestanden
         throw new Error('AI response fout')
       }
 
-      // Handle streaming response
-      const reader = response.body?.getReader()
-      const decoder = new TextDecoder()
-
-      if (!reader) {
-        throw new Error('No readable stream available')
-      }
-
-      let buffer = ''
-      let fullResponse = ''
-
-      while (true) {
-        const { done, value } = await reader.read()
-        
-        if (done) break
-
-        buffer += decoder.decode(value, { stream: true })
-        
-        const lines = buffer.split('\n')
-        buffer = lines.pop() || ''
-
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            try {
-              const data = JSON.parse(line.slice(6))
-              
-              if (data.error) {
-                throw new Error(data.message || 'AI streaming error')
-              }
-              
-              if (data.done) {
-                setIsStreaming(false)
-                return
-              }
-              
-              if (data.token) {
-                fullResponse += data.token
-                setAiResponse(fullResponse)
-              }
-            } catch (parseError) {
-              console.error('Error parsing streaming data:', parseError)
-            }
-          }
-        }
-      }
+      await handleStreamingResponse(response)
 
     } catch (error: any) {
       console.error('AI response error:', error)
@@ -175,6 +152,93 @@ Geef een uitgebreid en nuttig antwoord gebaseerd op de inhoud van deze bestanden
     }
   }
 
+  const generateDirectAIResponse = async (query: string) => {
+    setIsStreaming(true)
+    setAiResponse('')
+
+    // Create abort controller for this request
+    abortControllerRef.current = new AbortController()
+
+    try {
+      const prompt = `Beantwoord de volgende vraag op een behulpzame en informatieve manier: "${query}"
+
+Geef een duidelijk en uitgebreid antwoord. Als je aanvullende context of verduidelijking nodig hebt, geef dat dan aan.`
+
+      const response = await fetch('/api/ai-response', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt }),
+        signal: abortControllerRef.current.signal
+      })
+
+      if (!response.ok) {
+        throw new Error('AI response fout')
+      }
+
+      await handleStreamingResponse(response)
+
+    } catch (error: any) {
+      console.error('Direct AI response error:', error)
+      
+      if (error.name === 'AbortError') {
+        setAiResponse(prev => prev || 'AI response gestopt door gebruiker.')
+      } else {
+        setAiResponse('Fout bij genereren AI antwoord: ' + (error instanceof Error ? error.message : 'Onbekende fout'))
+      }
+    } finally {
+      setIsStreaming(false)
+      abortControllerRef.current = null
+    }
+  }
+
+  const handleStreamingResponse = async (response: Response) => {
+    // Handle streaming response
+    const reader = response.body?.getReader()
+    const decoder = new TextDecoder()
+
+    if (!reader) {
+      throw new Error('No readable stream available')
+    }
+
+    let buffer = ''
+    let fullResponse = ''
+
+    while (true) {
+      const { done, value } = await reader.read()
+      
+      if (done) break
+
+      buffer += decoder.decode(value, { stream: true })
+      
+      const lines = buffer.split('\n')
+      buffer = lines.pop() || ''
+
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          try {
+            const data = JSON.parse(line.slice(6))
+            
+            if (data.error) {
+              throw new Error(data.message || 'AI streaming error')
+            }
+            
+            if (data.done) {
+              setIsStreaming(false)
+              return
+            }
+            
+            if (data.token) {
+              fullResponse += data.token
+              setAiResponse(fullResponse)
+            }
+          } catch (parseError) {
+            console.error('Error parsing streaming data:', parseError)
+          }
+        }
+      }
+    }
+  }
+
   const stopAIResponse = () => {
     if (abortControllerRef.current) {
       abortControllerRef.current.abort()
@@ -184,7 +248,11 @@ Geef een uitgebreid en nuttig antwoord gebaseerd op de inhoud van deze bestanden
   const handleKeyPress = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
-      performSearch()
+      if (searchMode === 'search') {
+        performSearch()
+      } else {
+        askAI()
+      }
     }
   }
 
@@ -192,12 +260,38 @@ Geef een uitgebreid en nuttig antwoord gebaseerd op de inhoud van deze bestanden
     <div className="bg-white rounded-2xl shadow-xl p-8">
       <h2 className="text-2xl font-bold text-blue-800 mb-6 flex items-center">
         <span className="w-8 h-8 bg-blue-100 rounded-lg flex items-center justify-center mr-3">
-          🔍
+          {searchMode === 'search' ? '🔍' : '🤖'}
         </span>
-        AI Zoeken in je Dropbox
+        {searchMode === 'search' ? 'AI Zoeken in je Dropbox' : 'Vraag het aan AI'}
       </h2>
 
       <div className="space-y-6">
+        {/* Mode Toggle */}
+        <div className="flex items-center justify-center">
+          <div className="bg-gray-100 rounded-lg p-1 flex">
+            <button
+              onClick={() => setSearchMode('search')}
+              className={`px-4 py-2 rounded-md text-sm font-medium transition-all ${
+                searchMode === 'search'
+                  ? 'bg-blue-600 text-white shadow-sm'
+                  : 'text-gray-600 hover:text-blue-600'
+              }`}
+            >
+              🔍 Zoek in Bestanden
+            </button>
+            <button
+              onClick={() => setSearchMode('ask')}
+              className={`px-4 py-2 rounded-md text-sm font-medium transition-all ${
+                searchMode === 'ask'
+                  ? 'bg-purple-600 text-white shadow-sm'
+                  : 'text-gray-600 hover:text-purple-600'
+              }`}
+            >
+              🤖 Vraag AI
+            </button>
+          </div>
+        </div>
+
         {/* Search Input */}
         <div className="flex items-center space-x-4">
           <div className="flex-1">
@@ -206,35 +300,47 @@ Geef een uitgebreid en nuttig antwoord gebaseerd op de inhoud van deze bestanden
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               onKeyPress={handleKeyPress}
-              placeholder="Stel een vraag over je bestanden... (bijv. 'Wat staat er in mijn projectdocumenten?')"
+              placeholder={
+                searchMode === 'search' 
+                  ? "Stel een vraag over je bestanden... (bijv. 'Wat staat er in mijn projectdocumenten?')"
+                  : "Stel een vraag aan Gemini AI... (bijv. 'Leg uit hoe machine learning werkt')"
+              }
               className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
               disabled={isSearching}
             />
           </div>
           
           <button
-            onClick={performSearch}
+            onClick={searchMode === 'search' ? performSearch : askAI}
             disabled={isSearching || !query.trim()}
-            className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center"
+            className={`px-6 py-3 text-white rounded-lg focus:outline-none focus:ring-2 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center ${
+              searchMode === 'search'
+                ? 'bg-blue-600 hover:bg-blue-700 focus:ring-blue-500'
+                : 'bg-purple-600 hover:bg-purple-700 focus:ring-purple-500'
+            }`}
           >
             {isSearching ? (
               <>
                 <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white mr-2"></div>
-                Zoeken...
+                {searchMode === 'search' ? 'Zoeken...' : 'AI denkt na...'}
               </>
             ) : (
               <>
                 <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                  {searchMode === 'search' ? (
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                  ) : (
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  )}
                 </svg>
-                Zoeken
+                {searchMode === 'search' ? 'Zoeken' : 'Vraag AI'}
               </>
             )}
           </button>
         </div>
 
-        {/* Search Stats */}
-        {searchStats.totalFiles > 0 && (
+        {/* Search Stats - only show in search mode */}
+        {searchMode === 'search' && searchStats.totalFiles > 0 && (
           <div className="bg-gray-50 rounded-lg p-4">
             <div className="flex items-center justify-between text-sm text-gray-600">
               <span>
@@ -249,11 +355,21 @@ Geef een uitgebreid en nuttig antwoord gebaseerd op de inhoud van deze bestanden
 
         {/* AI Response */}
         {(aiResponse || isStreaming) && (
-          <div className="bg-green-50 border border-green-200 rounded-lg p-6">
+          <div className={`border rounded-lg p-6 ${
+            searchMode === 'search' 
+              ? 'bg-green-50 border-green-200' 
+              : 'bg-purple-50 border-purple-200'
+          }`}>
             <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-semibold text-green-800 flex items-center">
+              <h3 className={`text-lg font-semibold flex items-center ${
+                searchMode === 'search' ? 'text-green-800' : 'text-purple-800'
+              }`}>
                 <span className={`w-3 h-3 rounded-full mr-2 ${
-                  isStreaming ? 'bg-blue-600 animate-pulse' : 'bg-green-600'
+                  isStreaming 
+                    ? 'bg-blue-600 animate-pulse' 
+                    : searchMode === 'search' 
+                      ? 'bg-green-600' 
+                      : 'bg-purple-600'
                 }`}></span>
                 {isStreaming ? '🤖 AI denkt na...' : '🤖 AI Antwoord'}
               </h3>
@@ -280,8 +396,8 @@ Geef een uitgebreid en nuttig antwoord gebaseerd op de inhoud van deze bestanden
           </div>
         )}
 
-        {/* Search Results */}
-        {searchResults.length > 0 && (
+        {/* Search Results - only show in search mode */}
+        {searchMode === 'search' && searchResults.length > 0 && (
           <div className="space-y-4">
             <h3 className="text-lg font-semibold text-gray-800">
               Gevonden Bestanden ({searchResults.length})
@@ -328,8 +444,8 @@ Geef een uitgebreid en nuttig antwoord gebaseerd op de inhoud van deze bestanden
           </div>
         )}
 
-        {/* No Results */}
-        {!isSearching && query && searchResults.length === 0 && aiResponse && (
+        {/* No Results - only show in search mode */}
+        {searchMode === 'search' && !isSearching && query && searchResults.length === 0 && aiResponse && (
           <div className="text-center py-8">
             <div className="text-6xl mb-4">🔍</div>
             <h3 className="text-lg font-medium text-gray-800 mb-2">Geen bestanden gevonden</h3>
@@ -340,13 +456,34 @@ Geef een uitgebreid en nuttig antwoord gebaseerd op de inhoud van deze bestanden
         )}
 
         {/* Usage Tips */}
-        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-          <h4 className="text-sm font-medium text-blue-800 mb-2">💡 Zoektips:</h4>
-          <ul className="text-sm text-blue-700 space-y-1">
-            <li>• Stel specifieke vragen: "Wat zijn mijn projectdeadlines?"</li>
-            <li>• Zoek op onderwerp: "Alle documenten over marketing"</li>
-            <li>• Vraag om samenvattingen: "Vat mijn vergadernotities samen"</li>
-            <li>• Zoek naar specifieke informatie: "Contactgegevens van klanten"</li>
+        <div className={`border rounded-lg p-4 ${
+          searchMode === 'search' 
+            ? 'bg-blue-50 border-blue-200' 
+            : 'bg-purple-50 border-purple-200'
+        }`}>
+          <h4 className={`text-sm font-medium mb-2 ${
+            searchMode === 'search' ? 'text-blue-800' : 'text-purple-800'
+          }`}>
+            💡 {searchMode === 'search' ? 'Zoektips:' : 'AI Tips:'}
+          </h4>
+          <ul className={`text-sm space-y-1 ${
+            searchMode === 'search' ? 'text-blue-700' : 'text-purple-700'
+          }`}>
+            {searchMode === 'search' ? (
+              <>
+                <li>• Stel specifieke vragen: "Wat zijn mijn projectdeadlines?"</li>
+                <li>• Zoek op onderwerp: "Alle documenten over marketing"</li>
+                <li>• Vraag om samenvattingen: "Vat mijn vergadernotities samen"</li>
+                <li>• Zoek naar specifieke informatie: "Contactgegevens van klanten"</li>
+              </>
+            ) : (
+              <>
+                <li>• Stel algemene vragen: "Leg uit hoe machine learning werkt"</li>
+                <li>• Vraag om uitleg: "Wat is het verschil tussen React en Vue?"</li>
+                <li>• Krijg hulp: "Hoe schrijf ik een goede presentatie?"</li>
+                <li>• Brainstorm: "Geef me ideeën voor een marketingcampagne"</li>
+              </>
+            )}
           </ul>
         </div>
       </div>
