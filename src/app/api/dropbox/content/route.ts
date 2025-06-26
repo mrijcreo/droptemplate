@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { Dropbox } from 'dropbox'
+import fetch from 'node-fetch'
 
 export async function POST(request: NextRequest) {
   try {
@@ -12,7 +13,7 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    const dbx = new Dropbox({ accessToken, fetch: fetch })
+    const dbx = new Dropbox({ accessToken, fetch: fetch as any })
 
     try {
       // Download file content
