@@ -19,6 +19,15 @@ interface SearchResult {
   matchedContent: string
 }
 
+interface SearchHistory {
+  id: string
+  query: string
+  mode: 'search' | 'ask'
+  timestamp: Date
+  resultsCount: number
+  response: string
+}
+
 interface SearchInterfaceProps {
   fileIndex: FileIndex[]
   accessToken: string
@@ -31,8 +40,159 @@ export default function SearchInterface({ fileIndex, accessToken }: SearchInterf
   const [aiResponse, setAiResponse] = useState('')
   const [isStreaming, setIsStreaming] = useState(false)
   const [searchStats, setSearchStats] = useState({ filesSearched: 0, totalFiles: 0, searchTime: 0 })
-  const [searchMode, setSearchMode] = useState<'search' | 'ask'>('search') // New state for mode
+  const [searchMode, setSearchMode] = useState<'search' | 'ask'>('search')
+  const [searchHistory, setSearchHistory] = useState<SearchHistory[]>([])
+  const [showHistory, setShowHistory] = useState(false)
+  const [isExportingPDF, setIsExportingPDF] = useState(false)
   const abortControllerRef = useRef<AbortController | null>(null)
+
+  // Reset all search data
+  const resetSearch = () => {
+    setQuery('')
+    setSearchResults([])
+    setAiResponse('')
+    setIsStreaming(false)
+    setSearchStats({ filesSearched: 0, totalFiles: 0, searchTime: 0 })
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort()
+    }
+  }
+
+  // Clear search history
+  const clearHistory = () => {
+    setSearchHistory([])
+    setShowHistory(false)
+  }
+
+  // Add search to history
+  const addToHistory = (query: string, mode: 'search' | 'ask', resultsCount: number, response: string) => {
+    const historyItem: SearchHistory = {
+      id: `search_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+      query,
+      mode,
+      timestamp: new Date(),
+      resultsCount,
+      response
+    }
+    setSearchHistory(prev => [historyItem, ...prev.slice(0, 19)]) // Keep last 20 searches
+  }
+
+  // Load search from history
+  const loadFromHistory = (historyItem: SearchHistory) => {
+    setQuery(historyItem.query)
+    setSearchMode(historyItem.mode)
+    setAiResponse(historyItem.response)
+    if (historyItem.mode === 'search') {
+      // Note: We can't restore exact search results, but we can show the response
+      setSearchResults([])
+      setSearchStats({ filesSearched: fileIndex.length, totalFiles: fileIndex.length, searchTime: 0 })
+    }
+    setShowHistory(false)
+  }
+
+  // Export current response to PDF
+  const exportToPDF = async () => {
+    if (!aiResponse.trim()) {
+      alert('Geen response om te exporteren!')
+      return
+    }
+
+    setIsExportingPDF(true)
+    
+    try {
+      // Dynamic import to avoid SSR issues
+      const jsPDF = (await import('jspdf')).default
+
+      // Create new PDF document
+      const doc = new jsPDF()
+      
+      // Set font
+      doc.setFont('helvetica')
+      
+      // Add title
+      doc.setFontSize(16)
+      doc.setFont('helvetica', 'bold')
+      doc.text('AI Zoekresultaat', 20, 20)
+      
+      // Add query info
+      doc.setFontSize(12)
+      doc.setFont('helvetica', 'normal')
+      doc.text(`Query: ${query}`, 20, 35)
+      doc.text(`Modus: ${searchMode === 'search' ? 'Zoeken in bestanden' : 'Directe AI vraag'}`, 20, 45)
+      doc.text(`Datum: ${new Date().toLocaleString('nl-NL')}`, 20, 55)
+      
+      if (searchMode === 'search' && searchResults.length > 0) {
+        doc.text(`Gevonden bestanden: ${searchResults.length}`, 20, 65)
+      }
+
+      // Add separator line
+      doc.line(20, 75, 190, 75)
+
+      // Convert markdown to plain text for PDF
+      const plainTextResponse = convertMarkdownToPlainText(aiResponse)
+      
+      // Add response content
+      doc.setFontSize(10)
+      doc.setFont('helvetica', 'normal')
+      
+      // Split text into lines that fit the page width
+      const pageWidth = 170 // Available width (210 - 40 for margins)
+      const lineHeight = 6
+      let yPosition = 85
+      
+      const lines = doc.splitTextToSize(plainTextResponse, pageWidth)
+      
+      for (let i = 0; i < lines.length; i++) {
+        // Check if we need a new page
+        if (yPosition > 280) { // Near bottom of page
+          doc.addPage()
+          yPosition = 20
+        }
+        
+        doc.text(lines[i], 20, yPosition)
+        yPosition += lineHeight
+      }
+
+      // Add footer with file info
+      const pageCount = doc.getNumberOfPages()
+      for (let i = 1; i <= pageCount; i++) {
+        doc.setPage(i)
+        doc.setFontSize(8)
+        doc.setFont('helvetica', 'italic')
+        doc.text(`Gegenereerd door Dropbox AI Search - Pagina ${i} van ${pageCount}`, 20, 290)
+      }
+
+      // Generate filename
+      const timestamp = new Date().toISOString().slice(0, 16).replace('T', '_').replace(/:/g, '-')
+      const filename = `AI_Zoekresultaat_${timestamp}.pdf`
+      
+      // Save the PDF
+      doc.save(filename)
+      
+    } catch (error) {
+      console.error('PDF export error:', error)
+      alert('Fout bij PDF export: ' + (error instanceof Error ? error.message : 'Onbekende fout'))
+    } finally {
+      setIsExportingPDF(false)
+    }
+  }
+
+  // Convert markdown to plain text
+  const convertMarkdownToPlainText = (markdown: string): string => {
+    return markdown
+      .replace(/#{1,6}\s+/g, '') // Headers
+      .replace(/\*\*([^*]+)\*\*/g, '$1') // Bold
+      .replace(/\*([^*]+)\*/g, '$1') // Italic
+      .replace(/`([^`]+)`/g, '$1') // Inline code
+      .replace(/```[\s\S]*?```/g, '[Code]') // Code blocks
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1') // Links
+      .replace(/^\s*[-*+]\s+/gm, '• ') // Lists
+      .replace(/^\s*\d+\.\s+/gm, '') // Numbered lists
+      .replace(/^\s*>\s+/gm, '') // Quotes
+      .replace(/\n{2,}/g, '\n\n') // Multiple newlines
+      .replace(/\s+/g, ' ') // Multiple spaces
+      .trim()
+  }
 
   const performSearch = async () => {
     if (!query.trim()) return
@@ -72,14 +232,19 @@ export default function SearchInterface({ fileIndex, accessToken }: SearchInterf
 
       // If we have results, generate AI response
       if (results.length > 0) {
-        await generateAIResponse(query, results)
+        const response = await generateAIResponse(query, results)
+        addToHistory(query, 'search', results.length, response)
       } else {
-        setAiResponse('Geen relevante bestanden gevonden voor je zoekopdracht.')
+        const noResultsResponse = 'Geen relevante bestanden gevonden voor je zoekopdracht.'
+        setAiResponse(noResultsResponse)
+        addToHistory(query, 'search', 0, noResultsResponse)
       }
 
     } catch (error) {
       console.error('Search error:', error)
-      setAiResponse('Er is een fout opgetreden bij het zoeken: ' + (error instanceof Error ? error.message : 'Onbekende fout'))
+      const errorResponse = 'Er is een fout opgetreden bij het zoeken: ' + (error instanceof Error ? error.message : 'Onbekende fout')
+      setAiResponse(errorResponse)
+      addToHistory(query, 'search', 0, errorResponse)
     } finally {
       setIsSearching(false)
     }
@@ -89,23 +254,25 @@ export default function SearchInterface({ fileIndex, accessToken }: SearchInterf
     if (!query.trim()) return
 
     setIsSearching(true)
-    setSearchResults([]) // Clear search results for direct AI mode
+    setSearchResults([])
     setAiResponse('')
     setIsStreaming(false)
-    setSearchStats({ filesSearched: 0, totalFiles: 0, searchTime: 0 }) // Clear search stats
+    setSearchStats({ filesSearched: 0, totalFiles: 0, searchTime: 0 })
 
     try {
-      // Direct AI question without file search
-      await generateDirectAIResponse(query)
+      const response = await generateDirectAIResponse(query)
+      addToHistory(query, 'ask', 0, response)
     } catch (error) {
       console.error('AI ask error:', error)
-      setAiResponse('Er is een fout opgetreden bij het stellen van je vraag: ' + (error instanceof Error ? error.message : 'Onbekende fout'))
+      const errorResponse = 'Er is een fout opgetreden bij het stellen van je vraag: ' + (error instanceof Error ? error.message : 'Onbekende fout')
+      setAiResponse(errorResponse)
+      addToHistory(query, 'ask', 0, errorResponse)
     } finally {
       setIsSearching(false)
     }
   }
 
-  const generateAIResponse = async (query: string, results: SearchResult[]) => {
+  const generateAIResponse = async (query: string, results: SearchResult[]): Promise<string> => {
     setIsStreaming(true)
     setAiResponse('')
 
@@ -136,15 +303,20 @@ Geef een uitgebreid en nuttig antwoord gebaseerd op de inhoud van deze bestanden
         throw new Error('AI response fout')
       }
 
-      await handleStreamingResponse(response)
+      const finalResponse = await handleStreamingResponse(response)
+      return finalResponse
 
     } catch (error: any) {
       console.error('AI response error:', error)
       
       if (error.name === 'AbortError') {
-        setAiResponse(prev => prev || 'AI response gestopt door gebruiker.')
+        const abortedResponse = aiResponse || 'AI response gestopt door gebruiker.'
+        setAiResponse(abortedResponse)
+        return abortedResponse
       } else {
-        setAiResponse('Fout bij genereren AI antwoord: ' + (error instanceof Error ? error.message : 'Onbekende fout'))
+        const errorResponse = 'Fout bij genereren AI antwoord: ' + (error instanceof Error ? error.message : 'Onbekende fout')
+        setAiResponse(errorResponse)
+        return errorResponse
       }
     } finally {
       setIsStreaming(false)
@@ -152,7 +324,7 @@ Geef een uitgebreid en nuttig antwoord gebaseerd op de inhoud van deze bestanden
     }
   }
 
-  const generateDirectAIResponse = async (query: string) => {
+  const generateDirectAIResponse = async (query: string): Promise<string> => {
     setIsStreaming(true)
     setAiResponse('')
 
@@ -175,15 +347,20 @@ Geef een duidelijk en uitgebreid antwoord. Als je aanvullende context of verduid
         throw new Error('AI response fout')
       }
 
-      await handleStreamingResponse(response)
+      const finalResponse = await handleStreamingResponse(response)
+      return finalResponse
 
     } catch (error: any) {
       console.error('Direct AI response error:', error)
       
       if (error.name === 'AbortError') {
-        setAiResponse(prev => prev || 'AI response gestopt door gebruiker.')
+        const abortedResponse = aiResponse || 'AI response gestopt door gebruiker.'
+        setAiResponse(abortedResponse)
+        return abortedResponse
       } else {
-        setAiResponse('Fout bij genereren AI antwoord: ' + (error instanceof Error ? error.message : 'Onbekende fout'))
+        const errorResponse = 'Fout bij genereren AI antwoord: ' + (error instanceof Error ? error.message : 'Onbekende fout')
+        setAiResponse(errorResponse)
+        return errorResponse
       }
     } finally {
       setIsStreaming(false)
@@ -191,8 +368,7 @@ Geef een duidelijk en uitgebreid antwoord. Als je aanvullende context of verduid
     }
   }
 
-  const handleStreamingResponse = async (response: Response) => {
-    // Handle streaming response
+  const handleStreamingResponse = async (response: Response): Promise<string> => {
     const reader = response.body?.getReader()
     const decoder = new TextDecoder()
 
@@ -224,7 +400,7 @@ Geef een duidelijk en uitgebreid antwoord. Als je aanvullende context of verduid
             
             if (data.done) {
               setIsStreaming(false)
-              return
+              return fullResponse
             }
             
             if (data.token) {
@@ -237,6 +413,8 @@ Geef een duidelijk en uitgebreid antwoord. Als je aanvullende context of verduid
         }
       }
     }
+
+    return fullResponse
   }
 
   const stopAIResponse = () => {
@@ -258,15 +436,119 @@ Geef een duidelijk en uitgebreid antwoord. Als je aanvullende context of verduid
 
   return (
     <div className="bg-white rounded-2xl shadow-xl p-8">
-      <h2 className="text-2xl font-bold text-blue-800 mb-6 flex items-center">
-        <span className="w-8 h-8 bg-blue-100 rounded-lg flex items-center justify-center mr-3">
-          {searchMode === 'search' ? '🔍' : '🤖'}
-        </span>
-        {searchMode === 'search' ? 'AI Zoeken in je Dropbox' : 'Vraag het aan AI'}
-      </h2>
+      {/* Header with action buttons */}
+      <div className="flex items-center justify-between mb-6">
+        <h2 className="text-2xl font-bold text-blue-800 flex items-center">
+          <span className="w-8 h-8 bg-blue-100 rounded-lg flex items-center justify-center mr-3">
+            {searchMode === 'search' ? '🔍' : '🤖'}
+          </span>
+          {searchMode === 'search' ? 'AI Zoeken in je Dropbox' : 'Vraag het aan AI'}
+        </h2>
+
+        {/* Action buttons */}
+        <div className="flex items-center space-x-2">
+          {/* History button */}
+          <button
+            onClick={() => setShowHistory(!showHistory)}
+            className={`px-3 py-2 rounded-lg text-sm font-medium transition-all duration-200 flex items-center space-x-1 ${
+              showHistory
+                ? 'bg-purple-100 text-purple-700 border border-purple-200'
+                : 'bg-gray-100 hover:bg-purple-100 text-gray-700 hover:text-purple-700 border border-gray-200'
+            }`}
+            title="Zoekgeschiedenis"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            <span>Geschiedenis ({searchHistory.length})</span>
+          </button>
+
+          {/* Export PDF button */}
+          {aiResponse && (
+            <button
+              onClick={exportToPDF}
+              disabled={isExportingPDF}
+              className="px-3 py-2 bg-red-100 hover:bg-red-200 text-red-700 rounded-lg text-sm font-medium transition-all duration-200 flex items-center space-x-1 disabled:opacity-50"
+              title="Exporteer naar PDF"
+            >
+              {isExportingPDF ? (
+                <>
+                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-red-600"></div>
+                  <span>Exporteren...</span>
+                </>
+              ) : (
+                <>
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                  </svg>
+                  <span>PDF</span>
+                </>
+              )}
+            </button>
+          )}
+
+          {/* Reset button */}
+          <button
+            onClick={resetSearch}
+            className="px-3 py-2 bg-orange-100 hover:bg-orange-200 text-orange-700 rounded-lg text-sm font-medium transition-all duration-200 flex items-center space-x-1"
+            title="Herbegin zoeken"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
+            <span>Herbegin</span>
+          </button>
+
+          {/* Clear history button */}
+          {searchHistory.length > 0 && (
+            <button
+              onClick={clearHistory}
+              className="px-3 py-2 bg-red-100 hover:bg-red-200 text-red-700 rounded-lg text-sm font-medium transition-all duration-200 flex items-center space-x-1"
+              title="Wis zoekgeschiedenis"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+              </svg>
+              <span>Wis</span>
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Search History Panel */}
+      {showHistory && (
+        <div className="mb-6 bg-gray-50 border border-gray-200 rounded-lg p-4">
+          <h3 className="text-lg font-semibold text-gray-800 mb-3">Zoekgeschiedenis</h3>
+          {searchHistory.length === 0 ? (
+            <p className="text-gray-600 text-sm">Nog geen zoekopdrachten uitgevoerd.</p>
+          ) : (
+            <div className="space-y-2 max-h-60 overflow-y-auto">
+              {searchHistory.map((item) => (
+                <div
+                  key={item.id}
+                  className="bg-white border border-gray-200 rounded-lg p-3 hover:bg-gray-50 cursor-pointer transition-colors"
+                  onClick={() => loadFromHistory(item)}
+                >
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-sm font-medium text-gray-800 truncate flex-1">
+                      {item.mode === 'search' ? '🔍' : '🤖'} {item.query}
+                    </span>
+                    <span className="text-xs text-gray-500 ml-2">
+                      {item.timestamp.toLocaleString('nl-NL')}
+                    </span>
+                  </div>
+                  <div className="text-xs text-gray-600">
+                    {item.mode === 'search' ? `${item.resultsCount} resultaten` : 'Directe AI vraag'}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="space-y-6">
-        {/* Mode Toggle - Verbeterde styling en labels */}
+        {/* Mode Toggle */}
         <div className="flex items-center justify-center">
           <div className="bg-gray-100 rounded-xl p-1 flex shadow-inner">
             <button
