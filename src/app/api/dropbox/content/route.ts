@@ -2,6 +2,28 @@ import { NextRequest, NextResponse } from 'next/server'
 import { Dropbox } from 'dropbox'
 import fetch from 'node-fetch'
 
+// Fix for pdf-parse ENOENT error in serverless environments
+let pdfParse: any = null
+let pdfParseInitialized = false
+
+async function initializePdfParse() {
+  if (!pdfParseInitialized) {
+    try {
+      // Import pdfjs-dist and disable worker to prevent file system access
+      const pdfjs = await import('pdfjs-dist/build/pdf')
+      pdfjs.GlobalWorkerOptions.workerSrc = null
+      
+      // Import pdf-parse after configuring pdfjs
+      pdfParse = (await import('pdf-parse')).default
+      pdfParseInitialized = true
+    } catch (error) {
+      console.error('Failed to initialize pdf-parse:', error)
+      pdfParseInitialized = false
+    }
+  }
+  return pdfParse
+}
+
 export async function POST(request: NextRequest) {
   try {
     const { accessToken, filePath, fileType } = await request.json()
@@ -77,7 +99,11 @@ export async function POST(request: NextRequest) {
 
           // Strategy 1: Try with pdf-parse with enhanced options
           try {
-            const pdfParse = await import('pdf-parse').then(module => module.default)
+            const pdfParseLib = await initializePdfParse()
+            
+            if (!pdfParseLib) {
+              throw new Error('PDF-parse library not available')
+            }
             
             // Enhanced options for better text extraction
             const options = {
@@ -88,7 +114,7 @@ export async function POST(request: NextRequest) {
               disableCombineTextItems: false
             }
             
-            const pdfData = await pdfParse(pdfBuffer, options)
+            const pdfData = await pdfParseLib(pdfBuffer, options)
             let extractedText = pdfData.text || ''
             
             // KRITIEKE VERBETERING: Tekst cleaning en normalisatie
